@@ -39,9 +39,6 @@ class A1DProcessor(QThread):
         self._browser   = None
         self._cancelled = False
 
-        # ── Mask cleanup state ───────────────────────────────
-        # Stored as instance vars so _cleanup_mask() can reach them
-        # regardless of where in the process an error / cancel occurs.
         self._relay   = None
         self._mask_id = None
 
@@ -63,13 +60,10 @@ class A1DProcessor(QThread):
             self.log(f"Error: {e}", "ERROR")
             self.finished_signal.emit(False, str(e), "")
         finally:
-            # ✔️ Mask ALWAYS deleted here — after success, error, OR cancel.
-            # Never deleted mid-process (e.g. right after OTP).
             self._cleanup_mask()
             self._quit_browser()
 
     def _cleanup_mask(self):
-        """Delete the Firefox Relay mask. Safe to call multiple times."""
         if self._relay and self._mask_id:
             try:
                 self._relay.delete_mask(self._mask_id)
@@ -92,8 +86,6 @@ class A1DProcessor(QThread):
         mask_data = relay.create_mask("a1d-upscale-session")
         email     = mask_data["full_address"]
         mask_id   = mask_data["id"]
-
-        # Store on instance — cleanup happens in run()'s finally, not here
         self._relay   = relay
         self._mask_id = mask_id
 
@@ -107,7 +99,6 @@ class A1DProcessor(QThread):
         os.makedirs(out_dir, exist_ok=True)
         self.log(f"📁 Output: {out_dir}", "INFO")
 
-        # ─ Launch Playwright Chromium ─────────────────────────────────────────────────────
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
             headless       = self.config.get("headless", True),
@@ -191,7 +182,6 @@ class A1DProcessor(QThread):
         self._start_upscale()
         self.log("⚙️ Proses upscale dimulai!", "SUCCESS")
 
-        # ─ Initial wait ───────────────────────────────────────────────────────────────
         wait_sec = max(0, int(self.config.get("initial_download_wait", 120)))
         if wait_sec > 0:
             mins  = wait_sec // 60
@@ -210,7 +200,6 @@ class A1DProcessor(QThread):
         self.prog(88, "Menunggu proses selesai...")
         out_path = self._wait_and_download(out_dir)
         self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
-        # ✔️ No mask deletion here — it will be handled by run()'s finally block
         return out_path
 
     # ══ EMAIL ══════════════════════════════════════════════════════════════════════════════
@@ -509,16 +498,21 @@ class A1DProcessor(QThread):
         return out
 
     def _wait_and_download(self, out_dir: str) -> str:
-        timeout  = self.config.get("processing_hang_timeout", 1800)
-        start    = time.time()
-        last_pct = 88
+        timeout           = self.config.get("processing_hang_timeout", 1800)
+        start             = time.time()
+        last_pct          = 88
+        last_disabled_log = 0   # throttle "button disabled" messages (max 1 per 30s)
+
         DL_LOCATORS = [
             "//button[normalize-space(.)='Download' or contains(normalize-space(.),'Download')]",
             "//a[contains(normalize-space(.),'Download') or contains(@href,'.mp4')]",
         ]
+
         while time.time() - start < timeout:
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
+
+            # ── Step 1: find a visible Download button / link ──────────────────
             dl_btn = None
             for xpath in DL_LOCATORS:
                 try:
@@ -528,9 +522,40 @@ class A1DProcessor(QThread):
                         break
                 except Exception:
                     continue
+
             if dl_btn:
-                self.log("✅ Video siap di-download!", "SUCCESS")
+                # ── Step 2: guard — only proceed if button is ENABLED ──────────
+                # A disabled-but-visible button means the server is still
+                # rendering.  Clicking it triggers a 30 s Playwright timeout.
+                # We skip it here and let the outer loop keep polling.
+                try:
+                    enabled = dl_btn.is_enabled()
+                except Exception:
+                    enabled = False
+
+                if not enabled:
+                    now = time.time()
+                    if now - last_disabled_log >= 30:
+                        last_disabled_log = now
+                        elapsed_min = int((now - start) / 60)
+                        self.log(
+                            f"⏳ Tombol Download terdeteksi tapi masih disabled — "
+                            f"server masih render... ({elapsed_min}m)",
+                            "INFO",
+                        )
+                    elapsed = time.time() - start
+                    pct = min(91, 88 + int((elapsed / timeout) * 3))
+                    if pct > last_pct:
+                        last_pct = pct
+                        self.prog(pct, f"Rendering di server... ({int(elapsed / 60)}m)")
+                    time.sleep(6)
+                    continue   # ← back to while, keep waiting
+
+                # ── Step 3: button is visible + enabled → try to download ──
+                self.log("✅ Tombol Download aktif — mulai download!", "SUCCESS")
                 self.prog(92, "Mendownload video...")
+
+                # L1 — try to grab URL directly without a browser click
                 try:
                     dl_url = self.page.evaluate("""
                         (el) => {
@@ -560,6 +585,8 @@ class A1DProcessor(QThread):
                             return self._download_blob_url(url, self._build_output_path(out_dir))
                 except Exception as e:
                     self.log(f"⚠️ L1 gagal: {e}", "INFO")
+
+                # L2 — Playwright expect_download (button is confirmed enabled)
                 self.log("⏳ [L2] Playwright expect_download...", "INFO")
                 dl_timeout_ms = int(self.config.get("download_timeout", 600)) * 1000
                 try:
@@ -571,10 +598,16 @@ class A1DProcessor(QThread):
                     out_path = self._build_output_path(out_dir, ext=ext)
                     download.save_as(out_path)
                     sz_mb = os.path.getsize(out_path) / 1_048_576
-                    self.log(f"✅ Download selesai: {os.path.basename(out_path)} ({sz_mb:.1f} MB)", "SUCCESS")
+                    self.log(
+                        f"✅ Download selesai: {os.path.basename(out_path)} ({sz_mb:.1f} MB)",
+                        "SUCCESS",
+                    )
                     return out_path
                 except Exception as e:
                     self.log(f"⚠️ L2 gagal: {e}", "WARNING")
+
+                # L3 — filesystem watch fallback
+                self.log("⏳ [L3] Filesystem watch fallback...", "INFO")
                 before = set(os.listdir(out_dir))
                 dl_btn.click()
                 for _ in range(60):
@@ -588,13 +621,16 @@ class A1DProcessor(QThread):
                         best = max(new_files, key=os.path.getmtime)
                         if os.path.getsize(best) > 500_000:
                             return best
-                raise RuntimeError("❌ Download gagal")
+                raise RuntimeError("❌ Download gagal setelah semua metode")
+
+            # No button visible yet — update progress and keep waiting
             elapsed = time.time() - start
             pct     = min(91, 88 + int((elapsed / timeout) * 3))
             if pct > last_pct:
                 last_pct = pct
                 self.prog(pct, f"Upscaling... ({int(elapsed / 60)} menit)")
             time.sleep(6)
+
         raise TimeoutError(f"Timeout setelah {timeout // 60} menit")
 
     def _download_blob_url(self, blob_url: str, out_path: str) -> str:
@@ -617,7 +653,10 @@ class A1DProcessor(QThread):
         data_bytes = base64.b64decode(b64)
         with open(out_path, "wb") as f:
             f.write(data_bytes)
-        self.log(f"✅ Blob tersimpan: {os.path.basename(out_path)} ({len(data_bytes)/1_048_576:.1f} MB)", "SUCCESS")
+        self.log(
+            f"✅ Blob tersimpan: {os.path.basename(out_path)} ({len(data_bytes)/1_048_576:.1f} MB)",
+            "SUCCESS",
+        )
         return out_path
 
     def _download_url(self, url: str, out_dir: str) -> str:
@@ -635,8 +674,10 @@ class A1DProcessor(QThread):
                     f.write(chunk)
                     done += len(chunk)
                     if total:
-                        self.prog(92 + int((done / total) * 8),
-                                  f"Download {done//1_048_576}/{total//1_048_576} MB")
+                        self.prog(
+                            92 + int((done / total) * 8),
+                            f"Download {done//1_048_576}/{total//1_048_576} MB",
+                        )
         return out_path
 
     def _quit_browser(self):
