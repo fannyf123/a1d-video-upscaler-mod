@@ -40,7 +40,7 @@ class A1DProcessor(QThread):
     def cancel(self):
         self._cancelled = True
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
     def log(self, msg: str, level: str = "INFO"):
         self.log_signal.emit(msg, level)
 
@@ -57,7 +57,7 @@ class A1DProcessor(QThread):
         )
         return "".join(random.sample(pwd, len(pwd)))
 
-    # ── Main thread run ──────────────────────────────────────────────────────
+    # ── Main thread run ───────────────────────────────────────────────────────
     def run(self):
         output_path = ""
         try:
@@ -70,7 +70,7 @@ class A1DProcessor(QThread):
         finally:
             self._quit_driver()
 
-    # ── Core process ─────────────────────────────────────────────────────────
+    # ── Core process ──────────────────────────────────────────────────────────
     def _process(self) -> str:
         self.log("Memulai proses upscale...", "INFO")
 
@@ -78,7 +78,7 @@ class A1DProcessor(QThread):
         self.prog(5, "Membuat email mask...")
         api_key = self.config.get("relay_api_key", "").strip()
         if not api_key:
-            raise ValueError("Firefox Relay API Key belum diset! Buka Settings di kanan atas.")
+            raise ValueError("Firefox Relay API Key belum diset! Buka Settings ⚙ di kanan atas.")
 
         relay     = FirefoxRelay(api_key)
         mask_data = relay.create_mask("a1d-upscale-session")
@@ -90,8 +90,10 @@ class A1DProcessor(QThread):
         self.prog(10, "Email mask siap")
 
         # Step 2: Setup ChromeDriver
-        drv_name = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
-        drv_path = os.path.join(self.base_dir, "driver", drv_name)
+        drv_name    = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
+        drv_path    = os.path.join(self.base_dir, "driver", drv_name)
+        out_dir     = os.path.join(os.path.dirname(self.video_path), "OUTPUT")
+        os.makedirs(out_dir, exist_ok=True)
 
         opts = Options()
         if self.config.get("headless", True):
@@ -105,15 +107,11 @@ class A1DProcessor(QThread):
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         opts.add_experimental_option("useAutomationExtension", False)
-
-        out_dir = os.path.join(os.path.dirname(self.video_path), "OUTPUT")
-        os.makedirs(out_dir, exist_ok=True)
-        prefs = {
-            "download.default_directory": out_dir,
+        opts.add_experimental_option("prefs", {
+            "download.default_directory":  out_dir,
             "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-        }
-        opts.add_experimental_option("prefs", prefs)
+            "download.directory_upgrade":   True,
+        })
 
         svc         = Service(drv_path)
         self.driver = webdriver.Chrome(service=svc, options=opts)
@@ -131,36 +129,54 @@ class A1DProcessor(QThread):
             self._register(wait, email, password)
             self.log(f"Register dengan email: {email}", "INFO")
 
-            # Step 4: Baca OTP dari Gmail
+            # Step 4: Baca OTP dari Gmail — dengan live log callback
             self.prog(30, "Menunggu OTP dari Gmail...")
-            self.log("Membaca OTP dari Gmail...", "INFO")
-            gmail = GmailOTPReader(self.base_dir)
-            otp   = gmail.wait_for_otp(sender="a1d.ai", timeout=120)
-            self.log(f"OTP diterima: {otp}", "SUCCESS")
+            self.log("─" * 40, "INFO")
+            self.log("📬 Membaca OTP dari Gmail...", "INFO")
+            self.log(f"   Cek email yang diteruskan Firefox Relay ke Gmail Anda", "INFO")
+            self.log("─" * 40, "INFO")
 
+            gmail = GmailOTPReader(self.base_dir)
+
+            # Kirim log callback ke UI secara real-time
+            def _gmail_log(msg: str, level: str):
+                self.log(f"   [Gmail] {msg}", level)
+                if "berlalu" in msg:
+                    self.prog(30, msg)
+
+            otp = gmail.wait_for_otp(
+                sender="a1d.ai",
+                timeout=180,       # 3 menit — lebih dari cukup
+                interval=5,        # polling tiap 5 detik
+                log_callback=_gmail_log
+            )
+
+            self.log(f"✅ OTP diterima: {otp}", "SUCCESS")
+
+            # Step 5: Verifikasi OTP
             self.prog(40, "Verifikasi OTP...")
             self._input_otp(wait, otp)
             time.sleep(3)
 
-            # Step 5: Upload video
+            # Step 6: Upload video
             self.prog(50, "Mengupload video...")
             self.log(f"Upload: {os.path.basename(self.video_path)}", "INFO")
             self._upload_video(wait)
             time.sleep(3)
 
-            # Step 6: Pilih kualitas
+            # Step 7: Pilih kualitas
             self.prog(60, "Memilih kualitas output...")
             quality_key   = self.config.get("output_quality", "4k").lower()
             quality_label = self.QUALITY_MAP.get(quality_key, "4K")
             self._select_quality(quality_label)
             self.log(f"Kualitas dipilih: {quality_label}", "INFO")
 
-            # Step 7: Klik upscale
+            # Step 8: Klik upscale
             self.prog(65, "Memulai upscale di server...")
             self._start_upscale(wait)
             self.log("Proses upscale dimulai!", "SUCCESS")
 
-            # Step 8: Tunggu & download
+            # Step 9: Tunggu & download
             self.prog(70, "Menunggu proses selesai (bisa 5-30 menit)...")
             out_path = self._wait_and_download(wait, out_dir)
             self.log(f"Video tersimpan di: {out_path}", "SUCCESS")
@@ -175,7 +191,7 @@ class A1DProcessor(QThread):
 
         return out_path
 
-    # ── Selenium sub-steps ───────────────────────────────────────────────────
+    # ── Selenium sub-steps ────────────────────────────────────────────────────
     def _register(self, wait: WebDriverWait, email: str, password: str):
         try:
             btn = wait.until(EC.element_to_be_clickable((
