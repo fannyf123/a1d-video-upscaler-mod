@@ -26,6 +26,13 @@ credentials.json
 relay_config.json
 relay_credentials.json
 
+# USER SETTINGS — jangan di-track git agar tidak tertimpa saat update
+# Settings disimpan di sini (JANGAN hapus file ini secara manual):
+#   Windows : %APPDATA%\A1DUpscaler\config.json
+#   Template : config.default.json  (baca-saja, tidak berisi API key)
+config.json
+config.json.bak
+
 # IDE
 .vscode/
 .idea/

@@ -1,0 +1,14 @@
+{
+  "_comment": "File ini adalah TEMPLATE. Jangan isi API key di sini. Settings asli disimpan di %APPDATA%\\A1DUpscaler\\config.json",
+  "relay_api_key": "",
+  "output_quality": "4k",
+  "output_dir": "",
+  "headless": true,
+  "max_workers": 3,
+  "batch_stagger_delay": 15,
+  "initial_download_wait": 120,
+  "processing_hang_timeout": 1800,
+  "download_timeout": 600,
+  "a1d_url": "https://a1d.ai",
+  "log_max_lines": 500
+}
