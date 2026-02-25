@@ -6,17 +6,7 @@ import base64
 import shutil
 import datetime
 import requests as req
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import (
-    TimeoutException, NoSuchElementException, ElementClickInterceptedException
-)
+from playwright.sync_api import sync_playwright, Page, Download, TimeoutError as PWTimeout
 from PySide6.QtCore import QThread, Signal
 
 from App.firefox_relay import FirefoxRelay
@@ -31,8 +21,6 @@ QUALITY_TEXTS = {
                "2160", "4K Ultra HD", "4K UHD"],
 }
 
-QUALITY_PRIORITY: dict[str, list[str]] = {}
-
 # Waktu tunggu awal setelah upscale dimulai sebelum mulai polling tombol Download (detik)
 INITIAL_DOWNLOAD_WAIT = 120
 
@@ -45,110 +33,19 @@ class A1DProcessor(QThread):
     SIGNIN_URL = "https://a1d.ai/auth/sign-in"
     EDITOR_URL = "https://a1d.ai/video-upscaler/editor"
 
-    # Kandidat path Brave per OS
-    BRAVE_PATHS = {
-        "win32": [
-            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-            r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
-        ],
-        "darwin": [
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-        ],
-        "linux": [
-            "/usr/bin/brave-browser",
-            "/usr/bin/brave",
-            "/snap/bin/brave",
-            "/usr/local/bin/brave-browser",
-            "/opt/brave.com/brave/brave-browser",
-        ],
-    }
-
-    QUALITY_SELECTORS = {
-        "1080p": [
-            '[data-value="1080p"]', '[data-value="1080"]',
-            '[data-resolution="1080p"]', '[data-quality="1080p"]',
-            'button[class*="1080"]',
-            '//button[contains(.,"1080")]', '//label[contains(.,"1080")]',
-            '//div[@role="radio" and contains(.,"1080")]',
-        ],
-        "2k": [
-            '[data-value="2k"]', '[data-value="2K"]', '[data-value="1440p"]',
-            '[data-resolution="2k"]',
-            '//button[contains(.,"2K")]', '//label[contains(.,"2K")]',
-            '//div[@role="radio" and contains(.,"2K")]',
-            '//button[contains(.,"1440")]',
-        ],
-        "4k": [
-            '[data-value="4k"]', '[data-value="4K"]', '[data-value="2160p"]',
-            '[data-resolution="4k"]', '[data-quality="4k"]',
-            'button[class*="4K"]',
-            '//button[contains(.,"4K")]', '//label[contains(.,"4K")]',
-            '//div[@role="radio" and contains(.,"4K")]',
-            '//div[@role="button" and contains(.,"4K")]',
-            '//button[contains(.,"2160")]',
-        ],
-    }
-
     def __init__(self, base_dir: str, video_path: str, config: dict):
         super().__init__()
-        self.base_dir   = base_dir
-        self.video_path = video_path
-        self.config     = config
-        self.driver     = None
-        self._cancelled = False
+        self.base_dir    = base_dir
+        self.video_path  = video_path
+        self.config      = config
+        self.page        = None
+        self._pw         = None   # sync_playwright instance
+        self._browser    = None
+        self._cancelled  = False
 
     def cancel(self):    self._cancelled = True
     def log(self, msg, level="INFO"): self.log_signal.emit(msg, level)
     def prog(self, pct, msg=""):      self.progress_signal.emit(pct, msg)
-
-    # ══ BRAVE BINARY DETECTION ════════════════════════════════════════════════════
-    def _get_brave_binary(self) -> str:
-        """
-        Deteksi path executable Brave browser secara otomatis.
-
-        Urutan prioritas:
-          1. config['brave_path']           — override manual dari UI
-          2. Env var BRAVE_PATH             — override via environment
-          3. Kandidat path default per OS   — auto-detect
-
-        Raises RuntimeError jika Brave tidak ditemukan.
-        """
-        # 1. Config override
-        cfg = self.config.get("brave_path", "").strip()
-        if cfg and os.path.isfile(cfg):
-            return cfg
-        if cfg:
-            self.log(f"⚠️ brave_path di config tidak ditemukan: {cfg}", "WARNING")
-
-        # 2. Env var override
-        env = os.environ.get("BRAVE_PATH", "").strip()
-        if env and os.path.isfile(env):
-            return env
-
-        # 3. Auto-detect per OS
-        candidates = list(self.BRAVE_PATHS.get(sys.platform, self.BRAVE_PATHS["linux"]))
-
-        # Windows: tambahkan path dari LOCALAPPDATA (untuk user-install)
-        if sys.platform == "win32":
-            local = os.environ.get("LOCALAPPDATA", "")
-            if local:
-                candidates.append(
-                    os.path.join(local, r"BraveSoftware\Brave-Browser\Application\brave.exe")
-                )
-
-        for path in candidates:
-            if path and os.path.isfile(path):
-                return path
-
-        # Tidak ditemukan — bantu user dengan pesan yang jelas
-        paths_str = "\n  - ".join(candidates)
-        raise RuntimeError(
-            f"❌ Brave browser tidak ditemukan!\n"
-            f"Sudah dicek di:\n  - {paths_str}\n\n"
-            f"Solusi:\n"
-            f"  1. Install Brave dari https://brave.com\n"
-            f"  2. Atau set 'brave_path' di config dengan path lengkap ke brave.exe"
-        )
 
     # ══ MAIN RUN ═══════════════════════════════════════════════════════
     def run(self):
@@ -160,7 +57,7 @@ class A1DProcessor(QThread):
             self.log(f"Error: {e}", "ERROR")
             self.finished_signal.emit(False, str(e), "")
         finally:
-            self._quit_driver()
+            self._quit_browser()
 
     # ══ CORE PROCESS ════════════════════════════════════════════════════════
     def _process(self) -> str:
@@ -183,55 +80,39 @@ class A1DProcessor(QThread):
         os.makedirs(out_dir, exist_ok=True)
         self.log(f"📁 Output: {out_dir}", "INFO")
 
-        drv_name = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
-        drv_path = os.path.join(self.base_dir, "driver", drv_name)
-
-        # ─ Deteksi Brave binary ────────────────────────────────────────────────
-        brave_bin = self._get_brave_binary()
-        self.log(f"🦁 Brave: {brave_bin}", "INFO")
-
-        opts = Options()
-        # Arahkan Selenium ke Brave (bukan Chrome)
-        opts.binary_location = brave_bin
-
-        if self.config.get("headless", True):
-            opts.add_argument("--headless=new")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--window-size=1920,1080")
-        opts.add_argument("--mute-audio")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        # Sembunyikan tanda "Brave is being controlled by automated software"
-        opts.add_argument("--disable-brave-update")
-        opts.add_argument(
-            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        # ─ Launch Playwright Chromium ────────────────────────────────────────────────
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(
+            headless        = self.config.get("headless", True),
+            downloads_path  = out_dir,
+            args = [
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--mute-audio",
+                "--disable-gpu",
+            ],
         )
-        opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-        opts.add_experimental_option("useAutomationExtension", False)
-        opts.add_experimental_option("prefs", {
-            "download.default_directory":               out_dir,
-            "download.prompt_for_download":              False,
-            "download.directory_upgrade":                True,
-            "download_restrictions":                     0,
-            "safebrowsing.enabled":                      False,
-            "safebrowsing.disable_download_protection":  True,
-            "profile.default_content_setting_values.automatic_downloads": 1,
-            "profile.content_settings.exceptions.automatic_downloads.*.setting": 1,
-            # Matikan Brave Rewards / Shields notification saat headless
-            "brave.shields.stats_badge_visible":         False,
-        })
-
-        self.driver = webdriver.Chrome(service=Service(drv_path), options=opts)
-        self.driver.set_page_load_timeout(60)
-        wait = WebDriverWait(self.driver, 30)
-        self._apply_download_cdp(out_dir, silent=False)
+        context = self._browser.new_context(
+            viewport        = {"width": 1920, "height": 1080},
+            user_agent      = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            accept_downloads = True,
+        )
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        self.page = context.new_page()
+        self.page.set_default_timeout(30_000)
+        self.log("🎮 Playwright Chromium siap", "INFO")
 
         try:
             self.prog(15, "Membuka halaman sign-in...")
             self.log(f"[1] Buka: {self.SIGNIN_URL}", "INFO")
-            self.driver.get(self.SIGNIN_URL)
+            self.page.goto(self.SIGNIN_URL, wait_until="domcontentloaded")
             time.sleep(2.5)
 
             self.prog(20, "Input email mask...")
@@ -266,15 +147,15 @@ class A1DProcessor(QThread):
 
             self.prog(65, "Menunggu login berhasil...")
             self._wait_for_home(timeout=30)
-            self.log(f"✅ Login: {self.driver.current_url}", "SUCCESS")
+            self.log(f"✅ Login: {self.page.url}", "SUCCESS")
 
             self.prog(72, "Membuka video editor...")
             self.log(f"[2] Buka: {self.EDITOR_URL}", "INFO")
-            self.driver.get(self.EDITOR_URL)
+            self.page.goto(self.EDITOR_URL, wait_until="domcontentloaded")
             time.sleep(3)
 
             self.prog(78, "Mengupload video...")
-            self._upload_video(wait)
+            self._upload_video()
             time.sleep(6)
 
             self.prog(82, "Memilih kualitas...")
@@ -284,7 +165,7 @@ class A1DProcessor(QThread):
             self._start_upscale()
             self.log("⚙️ Proses upscale dimulai!", "SUCCESS")
 
-            # Tunggu 2 menit sebelum mulai polling tombol Download
+            # ─ Tunggu 2 menit sebelum mulai polling tombol Download ────────────────
             wait_sec = INITIAL_DOWNLOAD_WAIT
             self.log(f"⏳ Tunggu {wait_sec // 60} menit sebelum cek tombol Download...", "INFO")
             for remaining in range(wait_sec, 0, -1):
@@ -309,512 +190,306 @@ class A1DProcessor(QThread):
 
         return out_path
 
-    # ── CDP helper ──────────────────────────────────────────────────────────────────────────
-    def _apply_download_cdp(self, out_dir: str, silent: bool = False):
-        norm = os.path.normpath(os.path.abspath(out_dir))
-        try:
-            self.driver.execute_cdp_cmd("Page.setDownloadBehavior", {
-                "behavior": "allow", "downloadPath": norm,
-            })
-            if not silent:
-                self.log(f"✅ CDP download path: {norm}", "INFO")
-        except Exception as e:
-            if not silent:
-                self.log(f"⚠️ CDP: {e}", "WARNING")
-
-    # ══ SAFE CLICK (bypass overlay / ElementClickInterceptedException) ═══════════════
-    def _safe_click(self, element, label: str = "") -> bool:
-        """
-        Klik elemen dengan 3 layer fallback untuk menghindari
-        ElementClickInterceptedException.
-
-        Priority:
-          1. scrollIntoView + JS element.click()  — bypass overlay
-          2. ActionChains move_to_element + click
-          3. Native .click()                       — last resort
-        """
-        tag = label or "elemen"
-        try:
-            self.driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center',behavior:'instant'});"
-                "arguments[0].click();",
-                element
-            )
-            self.log(f"🔨 JS click: {tag}", "INFO")
-            return True
-        except Exception as e:
-            self.log(f"⚠️ JS click gagal ({tag}): {e}", "INFO")
-        try:
-            ActionChains(self.driver).move_to_element(element).click().perform()
-            self.log(f"🔨 ActionChains click: {tag}", "INFO")
-            return True
-        except Exception as e:
-            self.log(f"⚠️ ActionChains gagal ({tag}): {e}", "INFO")
-        try:
-            element.click()
-            self.log(f"🔨 Native click: {tag}", "INFO")
-            return True
-        except Exception as e:
-            self.log(f"❌ Semua click layer gagal ({tag}): {e}", "ERROR")
-        return False
-
-    # ══ EMAIL (4 layers) ═════════════════════════════════════════════════════════
-    def _find_email_field(self):
-        id_sel = A1D_EMAIL_ID.lstrip("#")
-        for by, sel in [
-            (By.ID, id_sel), (By.CSS_SELECTOR, A1D_EMAIL_ID),
-            (By.CSS_SELECTOR, 'input[placeholder="your@email.com"]'),
-            (By.CSS_SELECTOR, 'input[type="email"]'),
-            (By.CSS_SELECTOR, 'input[autocomplete="email"]'),
-            (By.CSS_SELECTOR, 'input[name="email"]'),
-            (By.CSS_SELECTOR, 'input[id*="email" i]'),
-            (By.CSS_SELECTOR, 'input[placeholder*="email" i]'),
-            (By.CSS_SELECTOR, 'input[type="text"]'),
-        ]:
-            try:
-                el = self.driver.find_element(by, sel)
-                if el.is_displayed(): return el
-            except NoSuchElementException:
-                continue
-        return None
-
+    # ══ EMAIL ═════════════════════════════════════════════════════════════════════════════
     def _fill_email(self, email: str):
-        driver = self.driver
-        wait   = WebDriverWait(driver, 20)
-        try:
-            wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-        except Exception:
-            pass
-        time.sleep(0.5)
-        id_sel = A1D_EMAIL_ID.lstrip("#")
-        try:
-            wait.until(EC.visibility_of_element_located((By.ID, id_sel)))
-            res = driver.execute_script("""
-                const el = document.getElementById(arguments[0]);
-                if (!el) return 'not_found';
-                el.scrollIntoView({block:'center',behavior:'instant'});
-                el.focus(); el.removeAttribute('disabled'); el.removeAttribute('readOnly');
-                const ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-                ns.call(el, arguments[1]);
-                ['focus','input','change'].forEach(e => el.dispatchEvent(new Event(e,{bubbles:true})));
-                return el.value;
-            """, id_sel, email)
-            if res == email: self.log("✅ Email OK (L1)", "INFO"); return
-        except Exception as e:
-            self.log(f"⚠️ L1: {e}", "INFO")
-        field = self._find_email_field()
-        if not field: raise RuntimeError("❌ Input email tidak ditemukan")
-        try:
-            driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center',behavior:'instant'});", field)
-            time.sleep(0.3)
-            field.click(); time.sleep(0.2); field.clear(); time.sleep(0.1)
-            field.send_keys(email); time.sleep(0.5)
-            if field.get_attribute("value") == email: self.log("✅ Email OK (L2)", "INFO"); return
-        except Exception as e:
-            self.log(f"⚠️ L2: {e}", "INFO")
-        try:
-            ac = ActionChains(driver)
-            ac.move_to_element(field).click(field)
-            ac.key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL)
-            ac.send_keys(Keys.DELETE).send_keys(email).perform()
-            time.sleep(0.6)
-            if field.get_attribute("value") == email: self.log("✅ Email OK (L3)", "INFO"); return
-        except Exception as e:
-            self.log(f"⚠️ L3: {e}", "INFO")
-        try:
-            driver.execute_script("""
-                let el = document.querySelector(arguments[0]) ||
-                    Array.from(document.querySelectorAll('input')).find(
-                        i => i.offsetParent && !i.disabled && !i.readOnly &&
-                            (i.type==='email'||(i.placeholder&&i.placeholder.toLowerCase().includes('email'))));
-                if (!el) return;
-                el.scrollIntoView({block:'center',behavior:'instant'}); el.focus();
-                el.removeAttribute('disabled'); el.removeAttribute('readOnly');
-                const ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-                ns.call(el,arguments[1]);
-                ['focus','input','change'].forEach(e=>el.dispatchEvent(new Event(e,{bubbles:true})));
-            """, A1D_EMAIL_ID, email)
-            time.sleep(0.5)
-            field = self._find_email_field()
-            if field and field.get_attribute("value") == email:
-                self.log("✅ Email OK (L4)", "INFO"); return
-        except Exception as e:
-            self.log(f"⚠️ L4: {e}", "INFO")
-        raise RuntimeError("❌ Semua layer gagal mengisi email")
+        EMAIL_SELS = [
+            A1D_EMAIL_ID,
+            'input[placeholder="your@email.com"]',
+            'input[type="email"]',
+            'input[autocomplete="email"]',
+            'input[name="email"]',
+            'input[id*="email" i]',
+            'input[placeholder*="email" i]',
+            'input[type="text"]',
+        ]
+        for sel in EMAIL_SELS:
+            try:
+                loc = self.page.locator(sel).first
+                if loc.is_visible(timeout=2_000):
+                    loc.scroll_into_view_if_needed()
+                    loc.fill(email)
+                    if loc.input_value() == email:
+                        self.log(f"✅ Email OK via: {sel}", "INFO")
+                        return
+            except Exception:
+                continue
+        # JS fallback
+        filled = self.page.evaluate("""
+            (email) => {
+                const inp = Array.from(document.querySelectorAll('input')).find(
+                    i => i.offsetParent && !i.disabled && !i.readOnly &&
+                        (i.type==='email' || (i.placeholder||'').toLowerCase().includes('email'))
+                );
+                if (!inp) return false;
+                const nv = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+                nv.call(inp, email);
+                ['focus','input','change'].forEach(e => inp.dispatchEvent(new Event(e,{bubbles:true})));
+                return inp.value === email;
+            }
+        """, email)
+        if filled:
+            self.log("✅ Email OK via JS fallback", "INFO")
+            return
+        raise RuntimeError("❌ Input email tidak ditemukan")
 
     def _click_submit(self):
-        for xpath in [
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'continue with email')]",
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'continue')]",
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'send code')]",
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-            "//button[@type='submit']",
-        ]:
+        for text in ["continue with email", "continue", "send code", "sign in"]:
             try:
-                btn = self.driver.find_element(By.XPATH, xpath)
-                if btn.is_displayed(): btn.click(); time.sleep(1.5); return
-            except NoSuchElementException:
+                btn = self.page.get_by_role("button", name=text, exact=False)
+                if btn.first.is_visible(timeout=2_000):
+                    btn.first.click()
+                    time.sleep(1.5)
+                    return
+            except Exception:
                 continue
-        field = self._find_email_field()
-        if field: field.send_keys(Keys.RETURN); time.sleep(1.5); return
-        raise RuntimeError("❌ Tombol submit tidak ditemukan")
+        try:
+            self.page.locator("button[type='submit']").first.click()
+            time.sleep(1.5)
+            return
+        except Exception:
+            pass
+        self.page.keyboard.press("Enter")
+        time.sleep(1.5)
 
     # ══ OTP ═══════════════════════════════════════════════════════════════════════════
     def _wait_for_otp_form(self, timeout: int = 30):
-        deadline = time.time() + timeout
         OTP_SELS = [
-            'input[autocomplete="one-time-code"]', 'input[inputmode="numeric"]',
-            'input[type="number"][maxlength="6"]', 'input[type="text"][maxlength="6"]',
-            'input[maxlength="1"]', 'input[placeholder*="code" i]',
+            'input[autocomplete="one-time-code"]',
+            'input[inputmode="numeric"]',
+            'input[type="number"][maxlength="6"]',
+            'input[type="text"][maxlength="6"]',
+            'input[maxlength="1"]',
+            'input[placeholder*="code" i]',
         ]
+        deadline = time.time() + timeout
         while time.time() < deadline:
-            if self._cancelled: raise InterruptedError("Dibatalkan")
+            if self._cancelled:
+                raise InterruptedError("Dibatalkan")
             for sel in OTP_SELS:
                 try:
-                    if self.driver.find_element(By.CSS_SELECTOR, sel).is_displayed(): return
-                except NoSuchElementException:
+                    if self.page.locator(sel).first.is_visible(timeout=500):
+                        return
+                except Exception:
                     continue
             time.sleep(0.8)
         raise TimeoutError("❌ Form OTP tidak muncul")
 
     def _fill_otp(self, otp: str):
-        for sel in [
-            'input[autocomplete="one-time-code"]', 'input[inputmode="numeric"]',
-            'input[type="number"][maxlength="6"]', 'input[type="text"][maxlength="6"]',
+        OTP_SELS = [
+            'input[autocomplete="one-time-code"]',
+            'input[inputmode="numeric"]',
+            'input[type="number"][maxlength="6"]',
+            'input[type="text"][maxlength="6"]',
             'input[placeholder*="code" i]',
-        ]:
+        ]
+        for sel in OTP_SELS:
             try:
-                f = self.driver.find_element(By.CSS_SELECTOR, sel)
-                if f.is_displayed():
-                    f.click(); f.clear(); f.send_keys(otp)
-                    self.log(f"OTP via: {sel}", "INFO"); return
-            except NoSuchElementException:
+                loc = self.page.locator(sel).first
+                if loc.is_visible(timeout=1_000):
+                    loc.fill(otp)
+                    self.log(f"OTP via: {sel}", "INFO")
+                    return
+            except Exception:
                 continue
-        digits = self.driver.find_elements(By.CSS_SELECTOR, 'input[maxlength="1"]')
+        # digit-by-digit fallback
+        digits = self.page.locator('input[maxlength="1"]').all()
         if len(digits) >= len(otp):
             for i, ch in enumerate(otp):
-                digits[i].click(); digits[i].send_keys(ch); time.sleep(0.08)
+                digits[i].click()
+                digits[i].fill(ch)
+                time.sleep(0.08)
             return
         raise RuntimeError("❌ Input OTP tidak ditemukan")
 
     def _click_otp_submit_and_verify(self, max_retries: int = 3) -> bool:
-        XPATHS = [
-            "//button[@type='submit']",
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'verify')]",
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'continue')]",
-        ]
-        for _ in range(1, max_retries + 1):
-            if self._cancelled: raise InterruptedError("Dibatalkan")
+        for _ in range(max_retries):
+            if self._cancelled:
+                raise InterruptedError("Dibatalkan")
             clicked = False
-            for xpath in XPATHS:
+            for text in ["verify", "continue", "submit"]:
                 try:
-                    btn = self.driver.find_element(By.XPATH, xpath)
-                    if btn.is_displayed(): btn.click(); clicked = True; break
-                except NoSuchElementException:
+                    btn = self.page.get_by_role("button", name=text, exact=False)
+                    if btn.first.is_visible(timeout=1_500):
+                        btn.first.click()
+                        clicked = True
+                        break
+                except Exception:
                     continue
             if not clicked:
                 try:
-                    self.driver.find_element(
-                        By.CSS_SELECTOR, 'input[autocomplete="one-time-code"]'
-                    ).send_keys(Keys.RETURN)
+                    self.page.locator("button[type='submit']").first.click()
                     clicked = True
                 except Exception:
                     pass
-            if not clicked: return False
+            if not clicked:
+                self.page.keyboard.press("Enter")
             time.sleep(2.5)
-            url = self.driver.current_url
-            if "/home" in url or "dashboard" in url: return True
+            url = self.page.url
+            if "/home" in url or "dashboard" in url:
+                return True
             otp_gone = not any(
-                self._safe_visible(s)
+                self.page.locator(s).first.is_visible(timeout=500)
                 for s in ['input[autocomplete="one-time-code"]', 'input[inputmode="numeric"]']
             )
-            if otp_gone: return True
+            if otp_gone:
+                return True
             time.sleep(2)
-        return "/home" in self.driver.current_url or "dashboard" in self.driver.current_url
-
-    def _safe_visible(self, css_sel: str) -> bool:
-        try: return self.driver.find_element(By.CSS_SELECTOR, css_sel).is_displayed()
-        except Exception: return False
+        return "/home" in self.page.url or "dashboard" in self.page.url
 
     def _wait_for_home(self, timeout: int = 30):
         start = time.time()
         while time.time() - start < timeout:
-            if self._cancelled: raise InterruptedError("Dibatalkan")
-            if "/home" in self.driver.current_url or "dashboard" in self.driver.current_url: return
+            if self._cancelled:
+                raise InterruptedError("Dibatalkan")
+            if "/home" in self.page.url or "dashboard" in self.page.url:
+                return
             time.sleep(1)
-        self.log(f"⚠️ Timeout /home — {self.driver.current_url}", "WARNING")
+        self.log(f"⚠️ Timeout /home — {self.page.url}", "WARNING")
 
     # ══ UPLOAD ═════════════════════════════════════════════════════════════════════════════
-    def _upload_video(self, wait: WebDriverWait):
+    def _upload_video(self):
         abs_path = os.path.abspath(self.video_path)
         try:
-            file_inp = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, 'input[type="file"]'
-            )))
-            file_inp.send_keys(abs_path)
+            file_input = self.page.locator('input[type="file"]').first
+            file_input.set_input_files(abs_path)
             self.log("✅ File diupload", "SUCCESS")
-        except TimeoutException:
-            for drop_sel in ['[class*="upload"]', '[class*="drop"]']:
-                try:
-                    self.driver.find_element(By.CSS_SELECTOR, drop_sel).click()
-                    time.sleep(1)
-                    self.driver.find_element(By.CSS_SELECTOR, 'input[type="file"]').send_keys(abs_path)
-                    self.log("✅ File via drop zone", "SUCCESS")
-                    return
-                except Exception:
-                    continue
-            raise RuntimeError("❌ Upload area tidak ditemukan")
+            return
+        except Exception:
+            pass
+        for drop_sel in ['[class*="upload"]', '[class*="drop"]']:
+            try:
+                self.page.locator(drop_sel).first.click()
+                time.sleep(1)
+                self.page.locator('input[type="file"]').first.set_input_files(abs_path)
+                self.log("✅ File via drop zone", "SUCCESS")
+                return
+            except Exception:
+                continue
+        raise RuntimeError("❌ Upload area tidak ditemukan")
 
     # ══ QUALITY SELECTION ═════════════════════════════════════════════════════════
-    def _wait_for_quality_options(self, timeout: int = 15):
-        keywords = ["4K", "2K", "1080", "quality", "resolution", "UHD", "HD"]
-        deadline = time.time() + timeout
+    def _select_quality(self, quality: str):
+        q     = quality.lower().strip()
+        texts = QUALITY_TEXTS.get(q, QUALITY_TEXTS["4k"])
+        self.log(f"📺 Pilih kualitas: {q.upper()}", "INFO")
+
+        # Tunggu quality options muncul
         self.log("⏳ Tunggu quality options...", "INFO")
+        deadline = time.time() + 15
         while time.time() < deadline:
-            try:
-                found = self.driver.execute_script("""
-                    const kw = arguments[0];
-                    const els = document.querySelectorAll(
+            found = self.page.evaluate("""
+                (kw) => {
+                    for (const el of document.querySelectorAll(
                         'button,[role="radio"],[role="button"],label,[class*="quality"],[class*="resolution"],[class*="option"],[class*="tab"],[class*="card"]'
-                    );
-                    for (const el of els) {
+                    )) {
                         const r = el.getBoundingClientRect();
                         if (r.width===0||r.height===0) continue;
                         if (kw.some(k => el.textContent.trim().toUpperCase().includes(k))) return true;
-                    } return false;
-                """, keywords)
-                if found: self.log("✅ Quality options terdeteksi", "INFO"); return
-            except Exception:
-                pass
+                    }
+                    return false;
+                }
+            """, ["4K", "2K", "1080", "quality", "resolution", "UHD", "HD"])
+            if found:
+                self.log("✅ Quality options terdeteksi", "INFO")
+                break
             time.sleep(0.5)
-        self.log("⚠️ Quality options belum muncul — lanjut", "WARNING")
+
+        # Coba via role
+        for text in texts:
+            for role in ["radio", "button"]:
+                try:
+                    loc = self.page.get_by_role(role, name=text, exact=False)
+                    if loc.first.is_visible(timeout=1_000):
+                        loc.first.click()
+                        self.log(f"✅ {q.upper()} via role={role} text='{text}'", "SUCCESS")
+                        time.sleep(0.5)
+                        return
+                except Exception:
+                    continue
+
+        # JS fallback
+        result = self.page.evaluate("""
+            (targets) => {
+                const SELS = [
+                    'button','[role="radio"]','[role="button"]','label',
+                    '[class*="option"],[class*="quality"],[class*="resolution"],[class*="card"],[class*="tab"],[class*="pill"]'
+                ];
+                for (const sel of SELS) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width===0||r.height===0) continue;
+                        const txt = el.textContent.trim();
+                        const val = (el.getAttribute('data-value')||el.getAttribute('aria-label')||'').toLowerCase();
+                        for (const t of targets) {
+                            if (txt===t||txt.toLowerCase()===t.toLowerCase()||
+                                txt.toUpperCase()===t.toUpperCase()||txt.includes(t)||
+                                val.includes(t.toLowerCase())) {
+                                el.scrollIntoView({block:'center',behavior:'instant'});
+                                el.click();
+                                return 'OK|'+txt.substring(0,40);
+                            }
+                        }
+                    }
+                }
+                return 'NOT_FOUND';
+            }
+        """, texts)
+
+        if result and result.startswith("OK|"):
+            self.log(f"✅ {q.upper()} (JS): {result}", "SUCCESS")
+            time.sleep(0.8)
+            return
+
+        self.log(f"⚠️ Quality {q.upper()} tidak ditemukan — lanjut", "WARNING")
+        self._debug_dump_quality()
 
     def _debug_dump_quality(self):
         try:
             ts        = datetime.datetime.now().strftime("%H%M%S")
             debug_dir = os.path.join(self.base_dir, "debug")
             os.makedirs(debug_dir, exist_ok=True)
-            ss_path = os.path.join(debug_dir, f"quality_{ts}.png")
-            self.driver.save_screenshot(ss_path)
+            ss_path   = os.path.join(debug_dir, f"quality_{ts}.png")
+            self.page.screenshot(path=ss_path, full_page=True)
             self.log(f"📸 Screenshot → {ss_path}", "WARNING")
             html_path = os.path.join(debug_dir, f"quality_{ts}.html")
-            with open(html_path, "w", encoding="utf-8") as f: f.write(self.driver.page_source)
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(self.page.content())
             self.log(f"📄 HTML dump → {html_path}", "WARNING")
-            raw = self.driver.execute_script("""
-                const SELS=['button','[role="button"]','[role="radio"]','[role="tab"]','label',
-                    '[class*="option"]','[class*="quality"]','[class*="resolution"]',
-                    '[class*="select"]','[class*="card"]','[class*="pill"]','[class*="btn"]','input[type="radio"]'];
-                const seen=new Set(); const out=[];
-                for(const sel of SELS){
-                    let els; try{els=document.querySelectorAll(sel);}catch(e){continue;}
-                    for(const el of els){
-                        if(seen.has(el))continue; seen.add(el);
-                        const r=el.getBoundingClientRect();
-                        if(r.width===0||r.height===0)continue;
-                        out.push({tag:el.tagName,text:el.textContent.trim().substring(0,70),
-                            cls:el.className.substring(0,100),id:el.id||'',
-                            dv:el.getAttribute('data-value')||'',
-                            al:el.getAttribute('aria-label')||'',role:el.getAttribute('role')||''});
-                    }
-                } return JSON.stringify(out.slice(0,60));
-            """)
-            items = json.loads(raw or '[]')
-            json_path = os.path.join(debug_dir, f"quality_{ts}.json")
-            with open(json_path, "w", encoding="utf-8") as f: json.dump(items, f, indent=2, ensure_ascii=False)
-            self.log(f"📊 JSON → {json_path} ({len(items)} items)", "WARNING")
-            kw = ['4k','2k','1080','quality','resolution','hd','uhd']
-            for it in items:
-                low=(it.get('text','')+it.get('dv','')+it.get('al','')+it.get('cls','')).lower()
-                if not any(k in low for k in kw): continue
-                sels=[]
-                if it.get('id'):  sels.append(f'#{it["id"]}')
-                if it.get('dv'):  sels.append(f'[data-value="{it["dv"]}"]')
-                if it.get('al'):  sels.append(f'[aria-label="{it["al"]}"]')
-                txt=it.get('text','').strip(); tag=it.get('tag','*').lower()
-                if txt: sels.append(f'//{tag}[normalize-space(.)="{txt}"]')
-                self.log(f"  🎯 <{it['tag']}> '{it['text'][:30]}' | {sels[0] if sels else '?'}", "WARNING")
-            self.log("💡 Jalankan: python tools/inspect_quality.py", "WARNING")
         except Exception as e:
             self.log(f"_debug_dump_quality: {e}", "INFO")
 
-    def _log_quality_elements(self):
-        try:
-            result = self.driver.execute_script("""
-                const kw=['4k','2k','1080','quality','resolution','hd','uhd','fhd'];
-                const found=[];
-                document.querySelectorAll('button,[role="button"],[role="radio"],label,[class*="option"],[class*="quality"],[class*="resolution"],[class*="tab"],[class*="card"],[class*="btn"]'
-                ).forEach(el=>{
-                    const r=el.getBoundingClientRect();
-                    if(r.width===0||r.height===0)return;
-                    const txt=el.textContent.trim().toLowerCase();
-                    if(!kw.some(k=>txt.includes(k)))return;
-                    found.push({tag:el.tagName,text:el.textContent.trim().substring(0,60),
-                        cls:el.className.substring(0,80),dv:el.getAttribute('data-value')||''});
-                }); return JSON.stringify(found.slice(0,10));
-            """)
-            items = json.loads(result or '[]')
-            if items:
-                self.log(f"🔍 Quality di DOM ({len(items)}):", "INFO")
-                for it in items: self.log(f"   <{it['tag']}> '{it['text']}' dv='{it['dv']}'", "INFO")
-            else:
-                self.log("🔍 Tidak ada quality element di DOM", "INFO")
-        except Exception as e:
-            self.log(f"_log_quality_elements: {e}", "INFO")
-
-    def _select_quality(self, quality: str):
-        q     = quality.lower().strip()
-        texts = QUALITY_TEXTS.get(q, QUALITY_TEXTS["4k"])
-        self.log(f"📺 Pilih kualitas: {q.upper()}", "INFO")
-        self._wait_for_quality_options(timeout=15)
-        priority_cfg  = self.config.get(f"quality_css_{q}", "").strip()
-        priority_list = list(QUALITY_PRIORITY.get(q, []))
-        if priority_cfg: priority_list.insert(0, priority_cfg)
-        for sel in priority_list:
-            try:
-                el = (self.driver.find_element(By.XPATH, sel) if sel.startswith("//")
-                      else self.driver.find_element(By.CSS_SELECTOR, sel))
-                if el.is_displayed():
-                    el.click()
-                    self.log(f"✅ {q.upper()} (PRIORITY): {sel}", "SUCCESS")
-                    time.sleep(0.5); return
-            except Exception: continue
-        js_result = None
-        try:
-            js_result = self.driver.execute_script("""
-                const targets=arguments[0];
-                const CLICKABLE=['button','div[role="button"]','div[role="radio"]','span[role="button"]',
-                    'span[role="radio"]','label','a','input[type="radio"]','input[type="button"]',
-                    '[class*="option"],[class*="quality"],[class*="resolution"],[class*="select"]',
-                    '[class*="choice"],[class*="item"],[class*="card"],[class*="tab"]',
-                    '[class*="pill"],[class*="btn"],[class*="radio"],[tabindex="0"]'];
-                for(const sel of CLICKABLE){
-                    let els; try{els=document.querySelectorAll(sel);}catch(e){continue;}
-                    for(const el of els){
-                        const rect=el.getBoundingClientRect();
-                        if(rect.width===0||rect.height===0)continue;
-                        const txt=el.textContent.trim();
-                        const val=(el.value||el.getAttribute('data-value')||el.getAttribute('data-quality')||
-                            el.getAttribute('data-resolution')||el.getAttribute('aria-label')||'');
-                        for(const t of targets){
-                            if(txt===t||txt.toLowerCase()===t.toLowerCase()||
-                               txt.trim().toUpperCase()===t.toUpperCase()||
-                               txt.includes(t)||val.toLowerCase()===t.toLowerCase()||
-                               val.toLowerCase().includes(t.toLowerCase())){
-                                el.scrollIntoView({block:'center',behavior:'instant'}); el.click();
-                                ['click','mousedown','mouseup'].forEach(ev=>{
-                                    try{el.dispatchEvent(new MouseEvent(ev,{bubbles:true}));}catch(_){}
-                                });
-                                return 'OK|'+sel+'|'+txt.substring(0,40);
-                            }
-                        }
-                    }
-                } return 'NOT_FOUND';
-            """, texts)
-        except Exception as e:
-            self.log(f"⚠️ JS quality: {e}", "WARNING")
-        if js_result and js_result.startswith("OK|"):
-            parts = js_result.split("|")
-            self.log(f"✅ {q.upper()} (JS) text='{parts[2]}'", "SUCCESS")
-            time.sleep(0.8); return
-        for sel in self.QUALITY_SELECTORS.get(q, self.QUALITY_SELECTORS["4k"]):
-            try:
-                el = (self.driver.find_element(By.XPATH, sel) if sel.startswith("//")
-                      else self.driver.find_element(By.CSS_SELECTOR, sel))
-                if el.is_displayed():
-                    el.click()
-                    self.log(f"✅ {q.upper()} (CSS/XPath): {sel}", "SUCCESS")
-                    time.sleep(0.5); return
-            except Exception: continue
-        self._log_quality_elements()
-        self._debug_dump_quality()
-        self.log(f"⚠️ Quality {q.upper()} tidak ditemukan — lanjut", "WARNING")
-
     # ══ START UPSCALE ════════════════════════════════════════════════════════════════
     def _start_upscale(self):
-        for xpath in [
-            "//button[contains(.,'Generate')]", "//button[contains(.,'Upscale')]",
-            "//button[contains(.,'Enhance')]", "//button[contains(.,'Start')]",
-            "//button[contains(.,'Process')]", "//button[@type='submit' and not(@disabled)]",
-        ]:
+        for text in ["Generate", "Upscale", "Enhance", "Start", "Process"]:
             try:
-                btn = self.driver.find_element(By.XPATH, xpath)
-                if btn.is_displayed() and btn.is_enabled():
-                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                    self._safe_click(btn, xpath.split("'")[1] if "'" in xpath else "upscale btn")
-                    self.log(f"✅ Upscale via: {xpath}", "INFO")
-                    time.sleep(2); return
-            except NoSuchElementException: continue
-        try:
-            res = self.driver.execute_script("""
-                const btns=document.querySelectorAll('button');
-                for(const b of btns){
-                    const t=b.textContent.trim().toLowerCase();
-                    if(t.includes('generate')||t.includes('upscale')||t.includes('enhance')||
-                       t.includes('start')||t.includes('process')){
-                        b.scrollIntoView({block:'center'}); b.click();
+                btn = self.page.get_by_role("button", name=text, exact=False)
+                if btn.first.is_visible(timeout=1_500) and btn.first.is_enabled():
+                    btn.first.scroll_into_view_if_needed()
+                    btn.first.click()
+                    self.log(f"✅ Upscale via button '{text}'", "INFO")
+                    time.sleep(2)
+                    return
+            except Exception:
+                continue
+        # JS fallback
+        result = self.page.evaluate("""
+            () => {
+                for (const b of document.querySelectorAll('button')) {
+                    const t = b.textContent.trim().toLowerCase();
+                    if (t.includes('generate')||t.includes('upscale')||
+                        t.includes('enhance')||t.includes('start')||t.includes('process')) {
+                        b.scrollIntoView({block:'center'});
+                        b.click();
                         return 'clicked:'+b.textContent.trim();
                     }
-                } return 'not_found';
-            """)
-            if res and res.startswith('clicked:'):
-                self.log(f"✅ Upscale (JS): {res}", "INFO")
-        except Exception as e:
-            self.log(f"⚠️ _start_upscale JS: {e}", "WARNING")
-
-    # ══ EXTRACT URL DARI TOMBOL DOWNLOAD ═══════════════════════════════════════
-    def _extract_url_from_element(self, element) -> dict | None:
-        try:
-            result = self.driver.execute_script("""
-                let el = arguments[0];
-                for (let i = 0; i < 8; i++) {
-                    const href = el.getAttribute('href') || el.href || '';
-                    if (href) {
-                        if (href.startsWith('blob:')) return {type: 'blob', url: href};
-                        if (href.startsWith('http')) return {type: 'http', url: href};
-                    }
-                    for (const attr of el.attributes) {
-                        const v = attr.value || '';
-                        if (v.startsWith('blob:')) return {type: 'blob', url: v};
-                        if (v.startsWith('http') && (
-                            v.includes('.mp4') || v.includes('.webm') || v.includes('video')
-                        )) return {type: 'http', url: v};
-                    }
-                    if (!el.parentElement) break;
-                    el = el.parentElement;
                 }
-                return null;
-            """, element)
-            return result
-        except Exception as e:
-            self.log(f"⚠️ _extract_url_from_element: {e}", "INFO")
-            return None
+                return 'not_found';
+            }
+        """)
+        if result and result.startswith("clicked:"):
+            self.log(f"✅ Upscale (JS): {result}", "INFO")
 
-    def _download_blob_url(self, blob_url: str, out_path: str) -> str:
-        self.log("📥 Download blob via JS fetch + FileReader...", "INFO")
-        data_url = self.driver.execute_async_script("""
-            const blobUrl = arguments[0];
-            const callback = arguments[1];
-            fetch(blobUrl)
-                .then(r => r.blob())
-                .then(blob => {
-                    const fr = new FileReader();
-                    fr.onload  = function() { callback(fr.result); };
-                    fr.onerror = function() { callback(null); };
-                    fr.readAsDataURL(blob);
-                })
-                .catch(() => { callback(null); });
-        """, blob_url)
-        if not data_url:
-            raise RuntimeError("❌ Gagal konversi blob ke data URL via FileReader")
-        _, b64 = data_url.split(',', 1)
-        data_bytes = base64.b64decode(b64)
-        with open(out_path, 'wb') as f:
-            f.write(data_bytes)
-        size_mb = len(data_bytes) / 1048576
-        self.log(f"✅ Blob tersimpan: {os.path.basename(out_path)} ({size_mb:.1f} MB)", "SUCCESS")
-        return out_path
-
+    # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════════
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
@@ -825,65 +500,115 @@ class A1DProcessor(QThread):
             cnt += 1
         return out
 
-    # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════════
     def _wait_and_download(self, out_dir: str) -> str:
-        timeout       = self.config.get("processing_hang_timeout", 1800)
-        start         = time.time()
-        last_pct      = 88
-        dl_triggered  = False
-        dl_btns_cache = []
+        """
+        Tunggu tombol Download muncul lalu download hasilnya.
+
+        [L1] Ambil URL dari atribut tombol (blob/http) → download langsung
+        [L2] Playwright expect_download() — paling reliable untuk file download
+        [L3] Last resort: cek file baru di out_dir setelah klik
+        """
+        timeout  = self.config.get("processing_hang_timeout", 1800)
+        start    = time.time()
+        last_pct = 88
+
+        DL_LOCATORS = [
+            "//button[normalize-space(.)='Download' or contains(normalize-space(.),'Download')]",
+            "//a[contains(normalize-space(.),'Download') or contains(@href,'.mp4')]",
+        ]
 
         while time.time() - start < timeout:
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
 
-            if not dl_triggered:
+            # Cari tombol Download
+            dl_btn = None
+            for xpath in DL_LOCATORS:
                 try:
-                    dl_btns_cache = self.driver.find_elements(
-                        By.XPATH,
-                        "//button[normalize-space(.)='Download' or "
-                        "contains(normalize-space(.),'Download')] | "
-                        "//a[contains(normalize-space(.),'Download') or "
-                        "contains(@href,'.mp4')]"
-                    )
-                    if dl_btns_cache:
-                        dl_triggered = True
+                    loc = self.page.locator(f"xpath={xpath}").first
+                    if loc.is_visible(timeout=500):
+                        dl_btn = loc
+                        break
                 except Exception:
-                    pass
+                    continue
 
-            if dl_triggered and dl_btns_cache:
+            if dl_btn:
                 self.log("✅ Video siap di-download!", "SUCCESS")
                 self.prog(92, "Mendownload video...")
-                self._apply_download_cdp(out_dir, silent=True)
 
-                dl_url = self._extract_url_from_element(dl_btns_cache[0])
-                if dl_url:
-                    url_type = dl_url.get('type', '')
-                    url      = dl_url.get('url', '')
-                    self.log(f"🎯 [L1] {url_type.upper()} URL dari tombol Download", "INFO")
-                    if url_type == 'http':
-                        return self._download_url(url, out_dir)
-                    if url_type == 'blob':
-                        out_path = self._build_output_path(out_dir)
-                        return self._download_blob_url(url, out_path)
+                # ─ L1: URL dari atribut elemen ──────────────────────────────────
+                try:
+                    dl_url = self.page.evaluate("""
+                        (el) => {
+                            for (let i = 0; i < 8; i++) {
+                                const href = el.getAttribute('href') || el.href || '';
+                                if (href.startsWith('blob:')) return {type:'blob', url:href};
+                                if (href.startsWith('http'))  return {type:'http', url:href};
+                                for (const attr of el.attributes) {
+                                    const v = attr.value || '';
+                                    if (v.startsWith('blob:')) return {type:'blob', url:v};
+                                    if (v.startsWith('http') && (v.includes('.mp4')||v.includes('video')))
+                                        return {type:'http', url:v};
+                                }
+                                if (!el.parentElement) break;
+                                el = el.parentElement;
+                            }
+                            return null;
+                        }
+                    """, dl_btn.element_handle())
 
-                self.log("⏳ [L2] Klik tombol Download via safe_click...", "INFO")
-                default_dl      = os.path.join(os.path.expanduser("~"), "Downloads")
-                dl_snapshot_pre = set()
-                if os.path.isdir(default_dl):
-                    try: dl_snapshot_pre = set(os.listdir(default_dl))
-                    except Exception: pass
+                    if dl_url:
+                        url_type = dl_url.get("type", "")
+                        url      = dl_url.get("url", "")
+                        self.log(f"🎯 [L1] {url_type.upper()} URL dari tombol", "INFO")
+                        if url_type == "http":
+                            return self._download_url(url, out_dir)
+                        if url_type == "blob":
+                            out_path = self._build_output_path(out_dir)
+                            return self._download_blob_url(url, out_path)
+                except Exception as e:
+                    self.log(f"⚠️ L1 gagal: {e}", "INFO")
 
-                before_out = set(os.listdir(out_dir))
-                click_time = time.time()
-                self._safe_click(dl_btns_cache[0], "Download button")
+                # ─ L2: Playwright expect_download() — paling reliable ────────
+                self.log("⏳ [L2] Playwright expect_download...", "INFO")
+                try:
+                    with self.page.expect_download(timeout=600_000) as dl_info:
+                        dl_btn.click()
+                    download: Download = dl_info.value
+                    fname   = download.suggested_filename or "output.mp4"
+                    ext     = os.path.splitext(fname)[1] or ".mp4"
+                    out_path = self._build_output_path(out_dir, ext=ext)
+                    download.save_as(out_path)
+                    sz_mb = os.path.getsize(out_path) / 1_048_576
+                    self.log(
+                        f"✅ Download selesai: {os.path.basename(out_path)} ({sz_mb:.1f} MB)",
+                        "SUCCESS"
+                    )
+                    return out_path
+                except Exception as e:
+                    self.log(f"⚠️ L2 gagal: {e}", "WARNING")
 
-                return self._wait_for_chrome_download(
-                    out_dir, before_out, dl_snapshot_pre, click_time, timeout=600
-                )
+                # ─ L3: Klik + pantau file baru di out_dir ──────────────────
+                self.log("⏳ [L3] Klik + pantau file baru...", "INFO")
+                before = set(os.listdir(out_dir))
+                dl_btn.click()
+                for _ in range(60):  # tunggu max 60 detik
+                    time.sleep(1)
+                    new_files = [
+                        os.path.join(out_dir, f)
+                        for f in (set(os.listdir(out_dir)) - before)
+                        if not f.endswith(".crdownload") and not f.endswith(".tmp")
+                    ]
+                    if new_files:
+                        best = max(new_files, key=os.path.getmtime)
+                        if os.path.getsize(best) > 500_000:
+                            self.log(f"✅ [L3] File baru: {os.path.basename(best)}", "SUCCESS")
+                            return best
+                raise RuntimeError("❌ Download gagal sepenuhnya")
 
+            # Belum ada tombol Download — update progress
             elapsed = time.time() - start
-            pct = min(91, 88 + int((elapsed / timeout) * 3))
+            pct     = min(91, 88 + int((elapsed / timeout) * 3))
             if pct > last_pct:
                 last_pct = pct
                 self.prog(pct, f"Upscaling... ({int(elapsed / 60)} menit)")
@@ -891,121 +616,32 @@ class A1DProcessor(QThread):
 
         raise TimeoutError(f"Timeout setelah {timeout // 60} menit")
 
-    def _wait_for_chrome_download(
-        self,
-        out_dir:         str,
-        before_out:      set,
-        dl_snapshot_pre: set,
-        click_time:      float,
-        timeout:         int = 600,
-    ) -> str:
-        start      = time.time()
-        default_dl = os.path.join(os.path.expanduser("~"), "Downloads")
-        use_fb     = (os.path.isdir(default_dl) and
-                      os.path.abspath(default_dl) != os.path.abspath(out_dir))
-        if use_fb:
-            self.log(f"🔍 Fallback monitor: {default_dl}", "INFO")
-
-        last_log = start
-
-        while time.time() - start < timeout:
-            if self._cancelled: raise InterruptedError("Dibatalkan")
-
-            try:
-                new_out = [
-                    os.path.join(out_dir, f)
-                    for f in (set(os.listdir(out_dir)) - before_out)
-                    if not f.endswith(".crdownload") and not f.endswith(".tmp")
-                ]
-                if new_out:
-                    best = max(new_out, key=os.path.getmtime)
-                    if os.path.getsize(best) > 500_000:
-                        self.log(f"✅ Download selesai (out_dir): {os.path.basename(best)}", "SUCCESS")
-                        return best
-            except Exception:
-                pass
-
-            if use_fb:
-                try:
-                    current_dl  = set(os.listdir(default_dl))
-                    by_snapshot = current_dl - dl_snapshot_pre
-                    by_mtime    = {
-                        f for f in current_dl
-                        if os.path.getmtime(os.path.join(default_dl, f)) >= click_time - 2
-                    }
-                    candidates  = by_snapshot | by_mtime
-
-                    in_prog = [f for f in candidates
-                               if f.endswith(".crdownload") or f.endswith(".tmp")]
-
-                    if in_prog:
-                        now = time.time()
-                        if now - last_log >= 8:
-                            try:
-                                sz = os.path.getsize(os.path.join(default_dl, in_prog[0]))
-                                self.log(
-                                    f"📥 Mendownload... {sz / 1048576:.1f} MB ({int(now - start)}s)",
-                                    "INFO"
-                                )
-                            except Exception:
-                                self.log(f"📥 Mendownload... ({int(now - start)}s)", "INFO")
-                            last_log = now
-                        time.sleep(2)
-                        continue
-
-                    completed = [
-                        f for f in candidates
-                        if not f.endswith(".crdownload") and not f.endswith(".tmp")
-                    ]
-
-                    for f in list(candidates):
-                        if not f.endswith(".tmp"): continue
-                        fp = os.path.join(default_dl, f)
-                        try:
-                            sz1 = os.path.getsize(fp)
-                            time.sleep(1.5)
-                            sz2 = os.path.getsize(fp)
-                            if sz1 == sz2 and sz1 > 500_000:
-                                completed.append(f)
-                        except Exception:
-                            pass
-
-                    completed.sort(
-                        key=lambda f: os.path.getmtime(os.path.join(default_dl, f)),
-                        reverse=True
-                    )
-
-                    for fname in completed:
-                        fpath = os.path.join(default_dl, fname)
-                        try:
-                            fsize = os.path.getsize(fpath)
-                        except Exception:
-                            continue
-                        if fsize < 500_000: continue
-
-                        dest = self._build_output_path(out_dir)
-                        shutil.move(fpath, dest)
-                        self.log(
-                            f"📦 Dipindah dari Downloads → "
-                            f"{os.path.basename(dest)} ({fsize // 1048576} MB)",
-                            "SUCCESS"
-                        )
-                        return dest
-
-                except Exception as e:
-                    self.log(f"⚠️ Monitor Downloads: {e}", "INFO")
-
-            time.sleep(1.5)
-
-        try:
-            all_out = sorted(
-                [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.endswith(".mp4")],
-                key=os.path.getmtime, reverse=True
-            )
-            if all_out: return all_out[0]
-        except Exception:
-            pass
-        raise TimeoutError("❌ Download Chrome tidak selesai")
+    def _download_blob_url(self, blob_url: str, out_path: str) -> str:
+        self.log("📥 Download blob via JS fetch + FileReader...", "INFO")
+        data_url = self.page.evaluate("""
+            async (blobUrl) => {
+                const r    = await fetch(blobUrl);
+                const blob = await r.blob();
+                return await new Promise((resolve, reject) => {
+                    const fr = new FileReader();
+                    fr.onload  = () => resolve(fr.result);
+                    fr.onerror = () => reject(null);
+                    fr.readAsDataURL(blob);
+                });
+            }
+        """, blob_url)
+        if not data_url:
+            raise RuntimeError("❌ Gagal konversi blob ke data URL")
+        _, b64 = data_url.split(",", 1)
+        data_bytes = base64.b64decode(b64)
+        with open(out_path, "wb") as f:
+            f.write(data_bytes)
+        size_mb = len(data_bytes) / 1_048_576
+        self.log(
+            f"✅ Blob tersimpan: {os.path.basename(out_path)} ({size_mb:.1f} MB)",
+            "SUCCESS"
+        )
+        return out_path
 
     def _download_url(self, url: str, out_dir: str) -> str:
         out_path = self._build_output_path(out_dir)
@@ -1015,16 +651,26 @@ class A1DProcessor(QThread):
             total = int(r.headers.get("content-length", 0))
             done  = 0
             with open(out_path, "wb") as f:
-                for chunk in r.iter_content(65536):
-                    if self._cancelled: raise InterruptedError("Download dibatalkan")
-                    f.write(chunk); done += len(chunk)
+                for chunk in r.iter_content(65_536):
+                    if self._cancelled:
+                        raise InterruptedError("Download dibatalkan")
+                    f.write(chunk)
+                    done += len(chunk)
                     if total:
-                        self.prog(92 + int((done / total) * 8),
-                                  f"Download {done // 1048576}/{total // 1048576} MB")
+                        self.prog(
+                            92 + int((done / total) * 8),
+                            f"Download {done // 1_048_576}/{total // 1_048_576} MB"
+                        )
         return out_path
 
-    def _quit_driver(self):
-        if self.driver:
-            try: self.driver.quit()
-            except Exception: pass
-            self.driver = None
+    # ══ CLEANUP ═══════════════════════════════════════════════════════════════════════
+    def _quit_browser(self):
+        for obj, attr in [(self, "_browser"), (self, "_pw")]:
+            try:
+                target = getattr(obj, attr)
+                if target:
+                    target.close() if attr == "_browser" else target.stop()
+            except Exception:
+                pass
+            setattr(obj, attr, None)
+        self.page = None
