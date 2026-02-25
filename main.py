@@ -27,46 +27,52 @@ APP_NAME    = "A1D Video Upscaler"
 APP_VER     = "2.6.2"
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  COLOUR SYSTEM
+#  COLOUR SYSTEM  —  GitHub-style palette
 # ══════════════════════════════════════════════════════════════════════════════
 THEMES = {
+    # ─────────────────────────────────────────────────
+    # GitHub Dark  (github.com/settings/appearance → Dark default)
+    # ─────────────────────────────────────────────────
     "dark": {
-        "bg":         "#0B0D14",
-        "sidebar":    "#0E1120",
-        "surface":    "#151929",
-        "surface2":   "#1C2136",
-        "input":      "#0E1020",
-        "border":     "#2A3050",
-        "primary":    "#8B5CF6",
-        "primary_h":  "#A78BFA",
-        "accent":     "#38BDF8",
-        "accent2":    "#34D399",
-        "text":       "#F0F4FF",
-        "text_dim":   "#CBD5E1",
-        "text_muted": "#64748B",
-        "success":    "#4ADE80",
-        "warning":    "#FBBF24",
-        "error":      "#F87171",
-        "log_bg":     "#07090F",
+        "bg":         "#0d1117",   # canvas.default
+        "sidebar":    "#161b22",   # canvas.subtle
+        "surface":    "#161b22",   # canvas.subtle
+        "surface2":   "#21262d",   # canvas.inset / border.muted
+        "input":      "#0d1117",   # canvas.default
+        "border":     "#30363d",   # border.default
+        "primary":    "#1f6feb",   # accent.emphasis
+        "primary_h":  "#58a6ff",   # accent.fg
+        "accent":     "#58a6ff",   # accent.fg
+        "accent2":    "#3fb950",   # success.fg
+        "text":       "#e6edf3",   # fg.default
+        "text_dim":   "#c9d1d9",   # fg.default (slightly dimmer)
+        "text_muted": "#8b949e",   # fg.muted
+        "success":    "#3fb950",   # success.fg
+        "warning":    "#e3b341",   # attention.fg
+        "error":      "#f85149",   # danger.fg
+        "log_bg":     "#010409",   # canvas.inset
     },
+    # ─────────────────────────────────────────────────
+    # GitHub Light (github.com/settings/appearance → Light default)
+    # ─────────────────────────────────────────────────
     "light": {
-        "bg":         "#EEF2FF",
-        "sidebar":    "#FFFFFF",
-        "surface":    "#FFFFFF",
-        "surface2":   "#F1F5F9",
-        "input":      "#F8FAFC",
-        "border":     "#C7D2E8",
-        "primary":    "#6D28D9",
-        "primary_h":  "#5B21B6",
-        "accent":     "#0369A1",
-        "accent2":    "#059669",
-        "text":       "#0F172A",
-        "text_dim":   "#1E293B",
-        "text_muted": "#475569",
-        "success":    "#15803D",
-        "warning":    "#92400E",
-        "error":      "#991B1B",
-        "log_bg":     "#F8FAFC",
+        "bg":         "#ffffff",   # canvas.default
+        "sidebar":    "#f6f8fa",   # canvas.subtle
+        "surface":    "#ffffff",   # canvas.default
+        "surface2":   "#f6f8fa",   # canvas.subtle
+        "input":      "#f6f8fa",   # canvas.subtle
+        "border":     "#d0d7de",   # border.default
+        "primary":    "#0969da",   # accent.emphasis
+        "primary_h":  "#0550ae",   # accent.emphasis (hover darker)
+        "accent":     "#0969da",   # accent.fg
+        "accent2":    "#1a7f37",   # success.fg
+        "text":       "#1f2328",   # fg.default
+        "text_dim":   "#24292f",   # fg.default
+        "text_muted": "#636c76",   # fg.muted
+        "success":    "#1a7f37",   # success.fg
+        "warning":    "#9a6700",   # attention.fg
+        "error":      "#cf222e",   # danger.fg
+        "log_bg":     "#f6f8fa",   # canvas.subtle
     },
 }
 
@@ -88,7 +94,7 @@ QWidget#Sidebar {{
     border-right: 1px solid {c['border']};
 }}
 
-/* ─ Typography ───────────────────────────────────────────── */
+/* ─ Typography ───────────────────────────────────── */
 QLabel {{ color: {c['text_dim']}; font-size: 10pt; font-weight: 600; }}
 QLabel#PageTitle {{
     color: {c['text']}; font-size: 21pt; font-weight: 900; letter-spacing: -0.5px;
@@ -110,129 +116,128 @@ QLabel#BadgeLabel {{
     border: 1px solid {c['primary']}50;
 }}
 
-/* ─ Cards ───────────────────────────────────────────────── */
+/* ─ Cards ────────────────────────────────────────── */
 QFrame#Card {{
-    background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 16px;
+    background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 6px;
 }}
 QFrame#AccentCard {{
     background: {c['surface']}; border: 1px solid {c['border']};
-    border-left: 4px solid {c['primary']}; border-radius: 16px;
+    border-left: 4px solid {c['primary']}; border-radius: 6px;
 }}
 QFrame#SuccessCard {{
     background: {c['surface']}; border: 1px solid {c['border']};
-    border-left: 4px solid {c['success']}; border-radius: 16px;
+    border-left: 4px solid {c['success']}; border-radius: 6px;
 }}
 QFrame#WarnCard {{
     background: {c['surface']}; border: 1px solid {c['border']};
-    border-left: 4px solid {c['warning']}; border-radius: 16px;
+    border-left: 4px solid {c['warning']}; border-radius: 6px;
 }}
 
-/* ─ Buttons ────────────────────────────────────────────── */
+/* ─ Buttons ──────────────────────────────────────── */
 QPushButton {{
-    background: {c['surface2']}; border: 1.5px solid {c['border']};
-    border-radius: 10px; padding: 10px 22px;
-    font-weight: 800; font-size: 10pt; color: {c['text']};
+    background: {c['surface2']}; border: 1px solid {c['border']};
+    border-radius: 6px; padding: 8px 18px;
+    font-weight: 700; font-size: 10pt; color: {c['text']};
 }}
 QPushButton:hover  {{ background: {c['border']}; border-color: {c['primary']}; color: {c['text']}; }}
 QPushButton:pressed{{ background: {c['bg']}; }}
 QPushButton#PrimaryBtn {{
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-        stop:0 {c['primary']}, stop:1 {c['primary_h']});
-    border: none; color: #FFFFFF; font-size: 11pt; font-weight: 900; padding: 14px 32px;
+    background: {c['primary']};
+    border: 1px solid {c['primary']};
+    color: #ffffff; font-size: 11pt; font-weight: 700; padding: 12px 28px;
+    border-radius: 6px;
 }}
 QPushButton#PrimaryBtn:hover {{
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-        stop:0 {c['primary_h']}, stop:1 {c['primary']});
+    background: {c['primary_h']};
+    border-color: {c['primary_h']};
 }}
 QPushButton#DangerBtn {{
-    background: {c['error']}18; border: 2px solid {c['error']};
-    color: {c['error']}; font-weight: 900;
+    background: {c['error']}18; border: 1px solid {c['error']}80;
+    color: {c['error']}; font-weight: 700; border-radius: 6px;
 }}
-QPushButton#DangerBtn:hover {{ background: {c['error']}; color: #FFFFFF; }}
+QPushButton#DangerBtn:hover {{ background: {c['error']}; color: #ffffff; }}
 QPushButton#WarnBtn {{
-    background: {c['warning']}18; border: 2px solid {c['warning']};
-    color: {c['warning']}; font-weight: 800;
+    background: {c['warning']}18; border: 1px solid {c['warning']}80;
+    color: {c['warning']}; font-weight: 700; border-radius: 6px;
 }}
-QPushButton#WarnBtn:hover {{ background: {c['warning']}; color: #0F172A; }}
+QPushButton#WarnBtn:hover {{ background: {c['warning']}; color: #0d1117; }}
 QPushButton#GhostBtn {{
-    background: transparent; border: 1.5px solid {c['border']};
-    color: {c['text_dim']}; font-weight: 700;
+    background: transparent; border: 1px solid {c['border']};
+    color: {c['text_dim']}; font-weight: 600; border-radius: 6px;
 }}
-QPushButton#GhostBtn:hover {{ border-color: {c['primary']}; color: {c['primary_h']}; }}
+QPushButton#GhostBtn:hover {{ border-color: {c['primary']}; color: {c['primary_h']}; background: {c['primary']}10; }}
 
-/* ─ Sidebar Nav ───────────────────────────────────────── */
+/* ─ Sidebar Nav ──────────────────────────────────── */
 QToolButton#NavBtn {{
-    background: transparent; border: none; border-radius: 12px;
-    padding: 14px 16px; font-size: 10pt; font-weight: 700;
+    background: transparent; border: none; border-radius: 6px;
+    padding: 12px 16px; font-size: 10pt; font-weight: 600;
     text-align: left; color: {c['text_muted']};
 }}
-QToolButton#NavBtn:hover {{ background: {c['surface']}; color: {c['text']}; }}
+QToolButton#NavBtn:hover {{ background: {c['surface2']}; color: {c['text']}; }}
 QToolButton#NavBtn:checked {{
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-        stop:0 {c['primary']}40, stop:1 {c['primary']}08);
-    color: {c['primary_h']}; font-weight: 900;
+    background: {c['primary']}1A;
+    color: {c['primary_h']}; font-weight: 700;
     border-left: 3px solid {c['primary']};
 }}
 
-/* ─ Inputs ─────────────────────────────────────────────── */
+/* ─ Inputs ───────────────────────────────────────── */
 QLineEdit, QComboBox, QSpinBox {{
-    background: {c['input']}; border: 1.5px solid {c['border']};
-    border-radius: 10px; padding: 11px 16px; min-height: 22px;
-    color: {c['text']}; font-weight: 700; font-size: 10pt;
+    background: {c['input']}; border: 1px solid {c['border']};
+    border-radius: 6px; padding: 9px 14px; min-height: 22px;
+    color: {c['text']}; font-weight: 600; font-size: 10pt;
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
-    border: 2px solid {c['primary']}; background: {c['surface']};
+    border: 1px solid {c['primary']}; outline: 2px solid {c['primary']}40;
+    background: {c['surface']};
 }}
-QLineEdit::placeholder {{ color: {c['text_muted']}; font-weight: 500; }}
+QLineEdit::placeholder {{ color: {c['text_muted']}; font-weight: 400; }}
 QComboBox QAbstractItemView {{
-    background: {c['surface2']}; border: 1.5px solid {c['border']};
-    color: {c['text']}; selection-background-color: {c['primary']}50;
+    background: {c['surface2']}; border: 1px solid {c['border']};
+    color: {c['text']}; selection-background-color: {c['primary']}40;
 }}
 
-/* ─ Checkbox ─────────────────────────────────────────── */
-QCheckBox {{ color: {c['text_dim']}; spacing: 10px; font-weight: 700; font-size: 10pt; }}
+/* ─ Checkbox ───────────────────────────────────── */
+QCheckBox {{ color: {c['text_dim']}; spacing: 10px; font-weight: 600; font-size: 10pt; }}
 QCheckBox::indicator {{
-    width: 22px; height: 22px; border: 2px solid {c['border']};
-    border-radius: 7px; background: {c['input']};
+    width: 18px; height: 18px; border: 1px solid {c['border']};
+    border-radius: 4px; background: {c['input']};
 }}
 QCheckBox::indicator:hover {{ border-color: {c['primary']}; }}
 QCheckBox::indicator:checked {{
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-        stop:0 {c['primary']}, stop:1 {c['primary_h']});
+    background: {c['primary']};
     border-color: {c['primary']};
 }}
 
-/* ─ List ───────────────────────────────────────────────── */
+/* ─ List ───────────────────────────────────────────── */
 QListWidget {{
-    background: {c['input']}; border: 1.5px solid {c['border']};
-    border-radius: 14px; outline: none; color: {c['text_dim']}; font-weight: 700;
+    background: {c['input']}; border: 1px solid {c['border']};
+    border-radius: 6px; outline: none; color: {c['text_dim']}; font-weight: 600;
 }}
 QListWidget::item {{
-    padding: 14px 18px; border-bottom: 1px solid {c['border']}; color: {c['text_dim']};
+    padding: 12px 16px; border-bottom: 1px solid {c['border']}; color: {c['text_dim']};
 }}
 QListWidget::item:hover {{ background: {c['surface2']}; color: {c['text']}; }}
 QListWidget::item:selected {{
-    background: {c['primary']}20; color: {c['primary_h']};
+    background: {c['primary']}18; color: {c['primary_h']};
     border-left: 3px solid {c['primary']};
 }}
 
-/* ─ Progress Bar ───────────────────────────────────────── */
+/* ─ Progress Bar ─────────────────────────────────── */
 QProgressBar {{
-    background: {c['surface2']}; border: 1.5px solid {c['border']};
-    border-radius: 12px; min-height: 22px; color: transparent;
+    background: {c['surface2']}; border: 1px solid {c['border']};
+    border-radius: 6px; min-height: 10px; color: transparent;
 }}
 QProgressBar::chunk {{
-    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-        stop:0 {c['primary']}, stop:0.5 {c['accent']}, stop:1 {c['accent2']});
-    border-radius: 10px;
+    background: {c['primary']};
+    border-radius: 5px;
 }}
 
-/* ─ Scrollbar ──────────────────────────────────────────── */
+/* ─ Scrollbar ─────────────────────────────────────── */
 QScrollBar:vertical {{ background: transparent; width: 8px; }}
 QScrollBar::handle:vertical {{
     background: {c['border']}; border-radius: 4px; min-height: 40px;
 }}
-QScrollBar::handle:vertical:hover {{ background: {c['primary']}80; }}
+QScrollBar::handle:vertical:hover {{ background: {c['text_muted']}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
 
@@ -256,26 +261,25 @@ class DropZone(QFrame):
     def _apply_idle(self):
         self.setStyleSheet(f"""
             QFrame#DropZone {{
-                border: 2.5px dashed {C['border']};
-                border-radius: 20px;
+                border: 2px dashed {C['border']};
+                border-radius: 6px;
                 background: {C['surface']};
             }}
         """)
         self.ico.setPixmap(qta.icon("fa5s.cloud-upload-alt", color=C['primary']).pixmap(52, 52))
-        # pt units to avoid QFont::setPointSize warning
-        self.txt.setStyleSheet(f"font-size: 13pt; font-weight: 900; color: {C['text']}; background: transparent;")
-        self.sub.setStyleSheet(f"font-size: 9pt; font-weight: 600; color: {C['text_muted']}; background: transparent;")
+        self.txt.setStyleSheet(f"font-size: 13pt; font-weight: 700; color: {C['text']}; background: transparent;")
+        self.sub.setStyleSheet(f"font-size: 9pt; font-weight: 400; color: {C['text_muted']}; background: transparent;")
 
     def _apply_hover(self):
         self.setStyleSheet(f"""
             QFrame#DropZone {{
-                border: 2.5px dashed {C['primary']};
-                border-radius: 20px;
+                border: 2px dashed {C['primary']};
+                border-radius: 6px;
                 background: {C['primary']}0D;
             }}
         """)
         self.ico.setPixmap(qta.icon("fa5s.cloud-upload-alt", color=C['primary_h']).pixmap(56, 56))
-        self.txt.setStyleSheet(f"font-size: 13pt; font-weight: 900; color: {C['primary_h']}; background: transparent;")
+        self.txt.setStyleSheet(f"font-size: 13pt; font-weight: 700; color: {C['primary_h']}; background: transparent;")
 
     def refresh_theme(self): self._apply_idle()
 
@@ -301,8 +305,8 @@ class LogViewer(QTextEdit):
         self.setStyleSheet(f"""
             QTextEdit {{
                 background: {C['log_bg']};
-                border: 1.5px solid {C['border']};
-                border-radius: 16px;
+                border: 1px solid {C['border']};
+                border-radius: 6px;
                 font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
                 font-size: 10pt;
                 padding: 20px;
@@ -329,7 +333,7 @@ class LogViewer(QTextEdit):
         text_color, bg_color = colours.get(lvl, (C['text'], None))
 
         ts      = datetime.datetime.now().strftime("%H:%M:%S")
-        ts_html = f'<span style="color:{C["text_muted"]};font-weight:700;">[{ts}]</span>'
+        ts_html = f'<span style="color:{C["text_muted"]};font-weight:600;">[{ts}]</span>'
 
         badge_styles = {
             "ERROR":   f'background:{C["error"]}35;color:{C["error"]};',
@@ -340,13 +344,12 @@ class LogViewer(QTextEdit):
         badge_labels = {"ERROR":" ERR ","WARNING":" WRN ","SUCCESS":" OK ","INFO":" INF "}
         bs  = badge_styles.get(lvl, badge_styles["INFO"])
         bl  = badge_labels.get(lvl, " INF ")
-        # font-size in HTML uses pt to stay consistent with Qt font system
-        badge = f'<span style="{bs}padding:1px 7px;border-radius:4px;font-size:8pt;font-weight:900;">{bl}</span>'
+        badge = f'<span style="{bs}padding:1px 7px;border-radius:4px;font-size:8pt;font-weight:700;">{bl}</span>'
 
-        row_style = f"background:{bg_color};border-radius:6px;padding:2px 6px;" if bg_color else "padding:2px 6px;"
+        row_style = f"background:{bg_color};border-radius:4px;padding:2px 6px;" if bg_color else "padding:2px 6px;"
         html = (f'<div style="{row_style}margin-bottom:2px;">'
                 f'{ts_html} {badge} '
-                f'<span style="color:{text_color};font-weight:600;">{msg}</span>'
+                f'<span style="color:{text_color};font-weight:500;">{msg}</span>'
                 f'</div>')
         self.append(html)
         self.moveCursor(QTextCursor.End)
@@ -369,7 +372,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._load_settings_to_ui()
 
-    # ── Config ───────────────────────────────────────────────────────────────
+    # ── Config ──────────────────────────────────────────────────────────────────
     def _load_config(self):
         d = {"relay_api_key":"","output_quality":"4k","output_dir":"",
              "headless":True,"max_workers":DEFAULT_WORKERS,
@@ -387,7 +390,7 @@ class MainWindow(QMainWindow):
         C.update(THEMES.get(name, THEMES["dark"]))
         self._theme = name; self.config["theme"] = name
 
-    # ── UI Scaffold ─────────────────────────────────────────────────────────
+    # ── UI Scaffold ──────────────────────────────────────────────────────────────
     def _setup_ui(self):
         root = QWidget(); self.setCentralWidget(root)
         hl = QHBoxLayout(root); hl.setContentsMargins(0,0,0,0); hl.setSpacing(0)
@@ -402,20 +405,19 @@ class MainWindow(QMainWindow):
 
     # ── Sidebar ─────────────────────────────────────────────────────────────
     def _build_sidebar(self):
-        sb = QWidget(); sb.setObjectName("Sidebar"); sb.setFixedWidth(270)
-        ly = QVBoxLayout(sb); ly.setContentsMargins(22, 42, 22, 28); ly.setSpacing(6)
+        sb = QWidget(); sb.setObjectName("Sidebar"); sb.setFixedWidth(260)
+        ly = QVBoxLayout(sb); ly.setContentsMargins(16, 32, 16, 24); ly.setSpacing(4)
 
         brand = QFrame(); brand.setObjectName("Card")
         brand.setStyleSheet(f"""QFrame#Card {{
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                stop:0 {C['primary']}30, stop:1 {C['accent']}18);
-            border: 1px solid {C['primary']}40; border-radius: 16px;
+            background: {C['surface2']};
+            border: 1px solid {C['border']}; border-radius: 6px;
         }}""")
-        bly = QVBoxLayout(brand); bly.setContentsMargins(18, 14, 18, 14)
+        bly = QVBoxLayout(brand); bly.setContentsMargins(16, 12, 16, 12)
         self.lbl_app = QLabel("A1D")
         self.lbl_ver = QLabel(f"Video Upscaler · v{APP_VER}"); self.lbl_ver.setObjectName("SubLabel")
         bly.addWidget(self.lbl_app); bly.addWidget(self.lbl_ver)
-        ly.addWidget(brand); ly.addSpacing(28)
+        ly.addWidget(brand); ly.addSpacing(20)
 
         self.nav_queue    = self._nav_btn("Dashboard",   "fa5s.layer-group", 0)
         self.nav_settings = self._nav_btn("Settings",    "fa5s.sliders-h",  1)
@@ -424,10 +426,10 @@ class MainWindow(QMainWindow):
         ly.addStretch()
 
         self.btn_theme = QPushButton(); self.btn_theme.setObjectName("GhostBtn")
-        self.btn_theme.setMinimumHeight(42); self.btn_theme.clicked.connect(self._toggle_theme)
-        ly.addWidget(self.btn_theme); ly.addSpacing(14)
+        self.btn_theme.setMinimumHeight(38); self.btn_theme.clicked.connect(self._toggle_theme)
+        ly.addWidget(self.btn_theme); ly.addSpacing(12)
 
-        sr = QHBoxLayout(); sr.setSpacing(10)
+        sr = QHBoxLayout(); sr.setSpacing(8)
         self.dot_status = QLabel("●")
         self.lbl_status = QLabel("SYSTEM IDLE"); self.lbl_status.setObjectName("SubLabel")
         sr.addWidget(self.dot_status); sr.addWidget(self.lbl_status); sr.addStretch()
@@ -436,18 +438,18 @@ class MainWindow(QMainWindow):
 
     def _nav_btn(self, text, icon, page):
         b = QToolButton(); b.setText(f"  {text}")
-        b.setIconSize(QSize(20, 20)); b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        b.setIconSize(QSize(18, 18)); b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         b.setCheckable(True); b.setAutoExclusive(True)
         b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        b.setObjectName("NavBtn"); b.setMinimumHeight(50)
+        b.setObjectName("NavBtn"); b.setMinimumHeight(44)
         b.clicked.connect(lambda _, i=page: self.stack.setCurrentIndex(i))
         b.clicked.connect(self._refresh_nav_icons)
         return b
 
-    # ── Dashboard ──────────────────────────────────────────────────────────
+    # ── Dashboard ────────────────────────────────────────────────────────────
     def _build_dashboard(self):
         page = QWidget(); ly = QVBoxLayout(page)
-        ly.setContentsMargins(48, 48, 48, 48); ly.setSpacing(24)
+        ly.setContentsMargins(40, 40, 40, 40); ly.setSpacing(20)
 
         hdr = QHBoxLayout()
         vb  = QVBoxLayout()
@@ -465,36 +467,35 @@ class MainWindow(QMainWindow):
         self.file_list = QListWidget(); self.file_list.setMinimumHeight(140)
         ly.addWidget(self.file_list, stretch=1)
 
-        ctrl = QHBoxLayout(); ctrl.setSpacing(12)
+        ctrl = QHBoxLayout(); ctrl.setSpacing(10)
         b_add = QPushButton("  Add Videos"); b_add.setObjectName("GhostBtn")
-        b_add.setIcon(qta.icon("fa5s.plus", color=C['accent'])); b_add.setMinimumHeight(44)
+        b_add.setIcon(qta.icon("fa5s.plus", color=C['accent'])); b_add.setMinimumHeight(40)
         b_add.clicked.connect(self._browse_files)
         b_del = QPushButton("  Remove Selected"); b_del.setObjectName("GhostBtn")
-        b_del.setIcon(qta.icon("fa5s.minus", color=C['error'])); b_del.setMinimumHeight(44)
+        b_del.setIcon(qta.icon("fa5s.minus", color=C['error'])); b_del.setMinimumHeight(40)
         b_del.clicked.connect(self._remove_selected)
         b_clr = QPushButton("  Clear All"); b_clr.setObjectName("DangerBtn")
-        b_clr.setIcon(qta.icon("fa5s.trash", color=C['error'])); b_clr.setMinimumHeight(44)
+        b_clr.setIcon(qta.icon("fa5s.trash", color=C['error'])); b_clr.setMinimumHeight(40)
         b_clr.clicked.connect(self._clear_files)
         ctrl.addWidget(b_add); ctrl.addWidget(b_del); ctrl.addWidget(b_clr); ctrl.addStretch()
 
         self.btn_start = QPushButton("  RUN UPSCALER"); self.btn_start.setObjectName("PrimaryBtn")
-        self.btn_start.setIcon(qta.icon("fa5s.rocket", color="#FFF")); self.btn_start.setMinimumSize(240, 54)
+        self.btn_start.setIcon(qta.icon("fa5s.rocket", color="#FFF")); self.btn_start.setMinimumSize(220, 48)
         self.btn_start.clicked.connect(self._start)
         self.btn_cancel = QPushButton("  FORCE STOP"); self.btn_cancel.setObjectName("DangerBtn")
-        self.btn_cancel.setIcon(qta.icon("fa5s.stop", color=C['error'])); self.btn_cancel.setMinimumSize(160, 54)
+        self.btn_cancel.setIcon(qta.icon("fa5s.stop", color=C['error'])); self.btn_cancel.setMinimumSize(150, 48)
         self.btn_cancel.hide(); self.btn_cancel.clicked.connect(self._cancel)
         ctrl.addWidget(self.btn_start); ctrl.addWidget(self.btn_cancel)
         ly.addLayout(ctrl)
 
         self.prog_card = QFrame(); self.prog_card.setObjectName("AccentCard"); self.prog_card.hide()
-        pl = QVBoxLayout(self.prog_card); pl.setContentsMargins(22, 18, 22, 18); pl.setSpacing(10)
+        pl = QVBoxLayout(self.prog_card); pl.setContentsMargins(20, 16, 20, 16); pl.setSpacing(8)
         ph = QHBoxLayout()
         self.prog_lbl = QLabel("Initializing engine...")
-        # pt units here too
-        self.prog_lbl.setStyleSheet(f"color:{C['text']}; font-weight:700; font-size:11pt;")
+        self.prog_lbl.setStyleSheet(f"color:{C['text']}; font-weight:600; font-size:11pt;")
         ph.addWidget(self.prog_lbl); ph.addStretch()
         self.prog_pct = QLabel("0%")
-        self.prog_pct.setStyleSheet(f"color:{C['primary_h']}; font-weight:900; font-size:13pt;")
+        self.prog_pct.setStyleSheet(f"color:{C['primary_h']}; font-weight:700; font-size:12pt;")
         ph.addWidget(self.prog_pct); pl.addLayout(ph)
         self.pbar = QProgressBar(); pl.addWidget(self.pbar)
         ly.addWidget(self.prog_card)
@@ -504,29 +505,28 @@ class MainWindow(QMainWindow):
     def _build_settings(self):
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
         content = QWidget(); ly = QVBoxLayout(content)
-        ly.setContentsMargins(48, 48, 48, 48); ly.setSpacing(28)
+        ly.setContentsMargins(40, 40, 40, 40); ly.setSpacing(24)
 
         t = QLabel("Advanced Configuration"); t.setObjectName("PageTitle"); ly.addWidget(t)
         s = QLabel("All settings persist to config.json on disk"); s.setObjectName("SubLabel"); ly.addWidget(s)
 
         def section(label, icon_name, card_type="AccentCard"):
             f = QFrame(); f.setObjectName(card_type)
-            fl = QVBoxLayout(f); fl.setContentsMargins(26, 22, 26, 22); fl.setSpacing(18)
-            hh = QHBoxLayout(); hh.setSpacing(12)
-            ic = QLabel(); ic.setPixmap(qta.icon(icon_name, color=C['primary']).pixmap(22, 22))
+            fl = QVBoxLayout(f); fl.setContentsMargins(24, 20, 24, 20); fl.setSpacing(16)
+            hh = QHBoxLayout(); hh.setSpacing(10)
+            ic = QLabel(); ic.setPixmap(qta.icon(icon_name, color=C['primary']).pixmap(20, 20))
             tl = QLabel(label); tl.setObjectName("SectionTitle")
             hh.addWidget(ic); hh.addWidget(tl); hh.addStretch(); fl.addLayout(hh)
             sep = QFrame(); sep.setFrameShape(QFrame.HLine)
             sep.setStyleSheet(f"background:{C['border']}; max-height:1px;")
             fl.addWidget(sep)
-            form = QFormLayout(); form.setSpacing(16); form.setLabelAlignment(Qt.AlignRight)
+            form = QFormLayout(); form.setSpacing(14); form.setLabelAlignment(Qt.AlignRight)
             fl.addLayout(form)
             return f, form
 
         def row_label(text, hint=""):
             w = QWidget(); ly2 = QVBoxLayout(w); ly2.setContentsMargins(0, 0, 12, 0); ly2.setSpacing(2)
-            # pt unit here too
-            l = QLabel(text); l.setStyleSheet(f"color:{C['text']};font-weight:700;font-size:10pt;")
+            l = QLabel(text); l.setStyleSheet(f"color:{C['text']};font-weight:600;font-size:10pt;")
             ly2.addWidget(l)
             if hint:
                 h = QLabel(hint); h.setObjectName("HintLabel"); ly2.addWidget(h)
@@ -539,7 +539,7 @@ class MainWindow(QMainWindow):
         self.i_url = QLineEdit(); self.i_url.setPlaceholderText("https://a1d.ai")
         self.btn_show = QPushButton(); self.btn_show.setObjectName("GhostBtn")
         self.btn_show.setIcon(qta.icon("fa5s.eye", color=C['text_muted']))
-        self.btn_show.setFixedSize(44, 44); self.btn_show.setCheckable(True)
+        self.btn_show.setFixedSize(40, 40); self.btn_show.setCheckable(True)
         self.btn_show.toggled.connect(lambda on: (
             self.i_api.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password),
             self.btn_show.setIcon(qta.icon("fa5s.eye-slash" if on else "fa5s.eye", color=C['accent']))
@@ -551,13 +551,13 @@ class MainWindow(QMainWindow):
 
         # Output
         g2, f2 = section("Output & Quality", "fa5s.film", "SuccessCard")
-        self.c_qual = QComboBox(); self.c_qual.addItems(["4k", "2k", "1080p"]); self.c_qual.setMinimumHeight(44)
+        self.c_qual = QComboBox(); self.c_qual.addItems(["4k", "2k", "1080p"]); self.c_qual.setMinimumHeight(40)
         self.i_out = QLineEdit(); self.i_out.setPlaceholderText("Leave empty to save next to source file")
         b_brw = QPushButton(); b_brw.setObjectName("GhostBtn")
-        b_brw.setIcon(qta.icon("fa5s.folder-open", color=C['accent'])); b_brw.setFixedSize(44, 44)
+        b_brw.setIcon(qta.icon("fa5s.folder-open", color=C['accent'])); b_brw.setFixedSize(40, 40)
         b_brw.clicked.connect(self._browse_output)
         out_row = QHBoxLayout(); out_row.addWidget(self.i_out); out_row.addWidget(b_brw)
-        self.s_wait = QSpinBox(); self.s_wait.setRange(0, 600); self.s_wait.setSuffix(" sec"); self.s_wait.setMinimumHeight(44)
+        self.s_wait = QSpinBox(); self.s_wait.setRange(0, 600); self.s_wait.setSuffix(" sec"); self.s_wait.setMinimumHeight(40)
         f2.addRow(row_label("Target Resolution", "Upscale target: 4K / 2K / 1080p"), self.c_qual)
         f2.addRow(row_label("Output Directory",  "Where to save finished videos"), out_row)
         f2.addRow(row_label("Initial Render Wait","Wait before checking download button"), self.s_wait)
@@ -565,14 +565,14 @@ class MainWindow(QMainWindow):
 
         # Performance
         g3, f3 = section("Performance & Reliability", "fa5s.microchip", "WarnCard")
-        self.s_work    = QSpinBox(); self.s_work.setRange(1, MAX_PARALLEL_LIMIT); self.s_work.setMinimumHeight(44)
-        self.s_stagger = QSpinBox(); self.s_stagger.setRange(0, 120); self.s_stagger.setSuffix(" sec"); self.s_stagger.setMinimumHeight(44)
-        self.s_dl_to   = QSpinBox(); self.s_dl_to.setRange(60, 3600); self.s_dl_to.setSuffix(" sec"); self.s_dl_to.setMinimumHeight(44)
-        self.s_hang    = QSpinBox(); self.s_hang.setRange(300, 7200); self.s_hang.setSuffix(" sec"); self.s_hang.setMinimumHeight(44)
+        self.s_work    = QSpinBox(); self.s_work.setRange(1, MAX_PARALLEL_LIMIT); self.s_work.setMinimumHeight(40)
+        self.s_stagger = QSpinBox(); self.s_stagger.setRange(0, 120); self.s_stagger.setSuffix(" sec"); self.s_stagger.setMinimumHeight(40)
+        self.s_dl_to   = QSpinBox(); self.s_dl_to.setRange(60, 3600); self.s_dl_to.setSuffix(" sec"); self.s_dl_to.setMinimumHeight(40)
+        self.s_hang    = QSpinBox(); self.s_hang.setRange(300, 7200); self.s_hang.setSuffix(" sec"); self.s_hang.setMinimumHeight(40)
         self.chk_h     = QCheckBox("Headless Browser  (run Chromium silently in background)")
         self.btn_rst   = QPushButton("  Force Reset — Kill Workers & Clear Temp Files")
         self.btn_rst.setObjectName("WarnBtn")
-        self.btn_rst.setIcon(qta.icon("fa5s.sync-alt", color=C['warning'])); self.btn_rst.setMinimumHeight(48)
+        self.btn_rst.setIcon(qta.icon("fa5s.sync-alt", color=C['warning'])); self.btn_rst.setMinimumHeight(44)
         self.btn_rst.clicked.connect(self._force_reset)
         f3.addRow(row_label("Max Parallel Workers",  f"Max: {MAX_PARALLEL_LIMIT} simultaneous"), self.s_work)
         f3.addRow(row_label("Stagger Delay",         "Seconds between launching each worker"), self.s_stagger)
@@ -582,15 +582,15 @@ class MainWindow(QMainWindow):
         ly.addWidget(g3)
 
         btn_sv = QPushButton("  SAVE ALL SETTINGS"); btn_sv.setObjectName("PrimaryBtn")
-        btn_sv.setIcon(qta.icon("fa5s.save", color="#FFF")); btn_sv.setMinimumHeight(58)
+        btn_sv.setIcon(qta.icon("fa5s.save", color="#FFF")); btn_sv.setMinimumHeight(52)
         btn_sv.clicked.connect(self._save_config); ly.addWidget(btn_sv)
         ly.addStretch()
         scroll.setWidget(content); return scroll
 
-    # ── Logs ─────────────────────────────────────────────────────────────────
+    # ── Logs ──────────────────────────────────────────────────────────────────
     def _build_logs(self):
         page = QWidget(); ly = QVBoxLayout(page)
-        ly.setContentsMargins(48, 48, 48, 48); ly.setSpacing(24)
+        ly.setContentsMargins(40, 40, 40, 40); ly.setSpacing(20)
 
         self.log_viewer = LogViewer()  # create first
 
@@ -609,13 +609,13 @@ class MainWindow(QMainWindow):
         for label, col in [("INFO", C['accent']), ("SUCCESS", C['success']),
                             ("WARNING", C['warning']), ("ERROR", C['error'])]:
             d = QLabel(f"●  {label}")
-            d.setStyleSheet(f"color:{col}; font-size:9pt; font-weight:800;")
+            d.setStyleSheet(f"color:{col}; font-size:9pt; font-weight:700;")
             leg.addWidget(d)
         leg.addStretch(); ly.addLayout(leg)
         ly.addWidget(self.log_viewer)
         return page
 
-    # ── Theme ───────────────────────────────────────────────────────────────
+    # ── Theme ─────────────────────────────────────────────────────────────────
     def _toggle_theme(self):
         new = "light" if self._theme == "dark" else "dark"
         self._apply_theme(new)
@@ -624,15 +624,14 @@ class MainWindow(QMainWindow):
         self._save_config(silent=True)
 
     def _refresh_all(self):
-        # font-weight capped at 900, font-size in pt — no more QFont warning
-        self.lbl_app.setStyleSheet(f"font-size:25pt; font-weight:900; color:{C['primary_h']};")
-        self.lbl_ver.setStyleSheet(f"font-size:8pt; font-weight:700; color:{C['text_muted']};")
+        self.lbl_app.setStyleSheet(f"font-size:22pt; font-weight:700; color:{C['primary_h']};")
+        self.lbl_ver.setStyleSheet(f"font-size:8pt; font-weight:400; color:{C['text_muted']};")
         ico = "fa5s.sun" if self._theme == "dark" else "fa5s.moon"
         lbl = "  Light Mode" if self._theme == "dark" else "  Dark Mode"
         self.btn_theme.setIcon(qta.icon(ico, color=C['accent'])); self.btn_theme.setText(lbl)
         self.badge_count.setStyleSheet(
-            f"background:{C['primary']}28; color:{C['primary_h']}; font-weight:900; "
-            f"font-size:9pt; padding:6px 16px; border-radius:20px; border:1px solid {C['primary']}50;"
+            f"background:{C['primary']}20; color:{C['primary_h']}; font-weight:700; "
+            f"font-size:9pt; padding:4px 14px; border-radius:20px; border:1px solid {C['primary']}40;"
         )
         self.drop_zone.refresh_theme()
         if hasattr(self, "log_viewer"): self.log_viewer.refresh_theme()
@@ -645,7 +644,7 @@ class MainWindow(QMainWindow):
                           (self.nav_logs,"fa5s.terminal")]:
             btn.setIcon(qta.icon(icon, color=C['primary_h'] if btn.isChecked() else C['text_muted']))
 
-    # ── Business Logic ─────────────────────────────────────────────────────
+    # ── Business Logic ──────────────────────────────────────────────────────────
     def _load_settings_to_ui(self):
         c = self.config
         self.i_api.setText(c.get("relay_api_key",""))
@@ -764,10 +763,9 @@ class MainWindow(QMainWindow):
         self.btn_start.setVisible(not r); self.btn_cancel.setVisible(r)
         self.prog_card.setVisible(r)
         color = C['success'] if r else C['text_muted']
-        # pt units here too
-        self.dot_status.setStyleSheet(f"color:{color}; font-size:15pt;")
+        self.dot_status.setStyleSheet(f"color:{color}; font-size:14pt;")
         self.lbl_status.setText("PROCESSING" if r else "SYSTEM IDLE")
-        self.lbl_status.setStyleSheet(f"color:{color}; font-size:8pt; font-weight:800; letter-spacing:1px;")
+        self.lbl_status.setStyleSheet(f"color:{color}; font-size:8pt; font-weight:700; letter-spacing:1px;")
 
     def _on_progress(self, pct, msg):
         self.pbar.setValue(pct)
@@ -788,7 +786,6 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    # Point size 10pt — always valid, never -1
     font = QFont("Segoe UI", 10); font.setStyleHint(QFont.SansSerif)
     app.setFont(font)
     app.setStyleSheet(build_stylesheet(C))
