@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import datetime
 import requests as req
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -17,15 +18,26 @@ from PySide6.QtCore import QThread, Signal
 from App.firefox_relay import FirefoxRelay
 from App.gmail_otp import GmailOTPReader
 
-# ── Selector spesifik a1d.ai/auth/sign-in (ported dari a1d-auto-upscaler) ──
+# ── Selector spesifik a1d.ai/auth/sign-in ──
 A1D_EMAIL_ID = "#_R_4p5fiv9fkjb_-form-item"
 
-# ── Teks varian untuk tiap kualitas (ported dari a1d-auto-upscaler) ─────────
+# ── Teks varian untuk tiap kualitas ─────────────────────────────────────────────
 QUALITY_TEXTS = {
     "1080p": ["1080p", "1080", "Full HD", "FHD", "1080P", "Full HD (1080p)"],
     "2k":    ["2K", "2k", "1440p", "QHD", "2K (1440p)", "1440", "2K QHD"],
     "4k":    ["4K", "4k", "2160p", "UHD", "Ultra HD", "4K (2160p)",
                "2160", "4K Ultra HD", "4K UHD"],
+}
+
+# ── QUALITY_PRIORITY: isi dari hasil tools/inspect_quality.py ───────────────
+# Selector di sini dicoba PERTAMA sebelum fallback generic.
+# Format: key = kualitas ("4k"/"2k"/"1080p"), value = list CSS/XPath.
+# Kosongkan dict ini jika belum tahu selectornya.
+QUALITY_PRIORITY: dict[str, list[str]] = {
+    # Contoh (ganti dengan hasil inspect_quality.py):
+    # "4k":    ['[data-value="4k"]', '//button[normalize-space(.)="4K"]'],
+    # "2k":    ['[data-value="2k"]'],
+    # "1080p": ['[data-value="1080p"]'],
 }
 
 
@@ -34,11 +46,9 @@ class A1DProcessor(QThread):
     progress_signal = Signal(int, str)         # (pct, msg)
     finished_signal = Signal(bool, str, str)   # (success, msg, output_path)
 
-    # ── URL constants (identik dengan a1d-auto-upscaler) ─────────────────────
     SIGNIN_URL = "https://a1d.ai/auth/sign-in"
     EDITOR_URL = "https://a1d.ai/video-upscaler/editor"
 
-    # ── Quality selectors (ported dari a1d-auto-upscaler QUALITY_SELECTORS) ──
     QUALITY_SELECTORS = {
         "1080p": [
             '[data-value="1080p"]', '[data-value="1080"]',
@@ -65,8 +75,6 @@ class A1DProcessor(QThread):
         ],
     }
 
-    QUALITY_MAP = {"1080p": "1080p", "2k": "2k", "4k": "4k"}
-
     def __init__(self, base_dir: str, video_path: str, config: dict):
         super().__init__()
         self.base_dir   = base_dir
@@ -75,14 +83,9 @@ class A1DProcessor(QThread):
         self.driver     = None
         self._cancelled = False
 
-    def cancel(self):
-        self._cancelled = True
-
-    def log(self, msg: str, level: str = "INFO"):
-        self.log_signal.emit(msg, level)
-
-    def prog(self, pct: int, msg: str = ""):
-        self.progress_signal.emit(pct, msg)
+    def cancel(self):    self._cancelled = True
+    def log(self, msg: str, level: str = "INFO"): self.log_signal.emit(msg, level)
+    def prog(self, pct: int, msg: str = ""): self.progress_signal.emit(pct, msg)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  MAIN RUN
@@ -241,7 +244,7 @@ class A1DProcessor(QThread):
         return out_path
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  EMAIL (ported dari a1d-auto-upscaler, 4 layers)
+    #  EMAIL (4 layers)
     # ══════════════════════════════════════════════════════════════════════════
     def _find_email_field(self):
         id_sel = A1D_EMAIL_ID.lstrip("#")
@@ -273,7 +276,6 @@ class A1DProcessor(QThread):
         time.sleep(0.5)
         id_sel = A1D_EMAIL_ID.lstrip("#")
 
-        # L1: JS inject ke ID spesifik
         try:
             wait.until(EC.visibility_of_element_located((By.ID, id_sel)))
             res = driver.execute_script("""
@@ -292,7 +294,6 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"⚠️ L1: {e}", "INFO")
 
-        # L2: Selenium standard
         field = self._find_email_field()
         if not field: raise RuntimeError("❌ Input email tidak ditemukan")
         try:
@@ -305,7 +306,6 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"⚠️ L2: {e}", "INFO")
 
-        # L3: ActionChains
         try:
             ac = ActionChains(driver)
             ac.move_to_element(field).click(field)
@@ -316,7 +316,6 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"⚠️ L3: {e}", "INFO")
 
-        # L4: JS fallback any input
         try:
             driver.execute_script("""
                 let el = document.querySelector(arguments[0]) ||
@@ -423,7 +422,6 @@ class A1DProcessor(QThread):
                 except Exception:
                     pass
             if not clicked: return False
-
             time.sleep(2.5)
             url = self.driver.current_url
             if "/home" in url or "dashboard" in url: return True
@@ -433,7 +431,6 @@ class A1DProcessor(QThread):
             )
             if otp_gone: return True
             time.sleep(2)
-
         url = self.driver.current_url
         return "/home" in url or "dashboard" in url
 
@@ -486,13 +483,13 @@ class A1DProcessor(QThread):
                 found = self.driver.execute_script("""
                     const kw = arguments[0];
                     const els = document.querySelectorAll(
-                        'button, [role="radio"], [role="button"], label,
-                         [class*="quality"], [class*="resolution"], [class*="option"],
-                         [class*="tab"], [class*="card"]'
+                        'button,[role="radio"],[role="button"],label,
+                         [class*="quality"],[class*="resolution"],[class*="option"],
+                         [class*="tab"],[class*="card"]'
                     );
                     for (const el of els) {
                         const r = el.getBoundingClientRect();
-                        if (r.width === 0 || r.height === 0) continue;
+                        if (r.width===0||r.height===0) continue;
                         const t = el.textContent.trim().toUpperCase();
                         if (kw.some(k => t.includes(k))) return true;
                     }
@@ -504,6 +501,110 @@ class A1DProcessor(QThread):
                 pass
             time.sleep(0.5)
         self.log("⚠️ Quality options belum muncul — lanjut", "WARNING")
+
+    def _debug_dump_quality(self):
+        """
+        Dipanggil otomatis saat quality selector gagal.
+        Simpan ke base_dir/debug/quality_HHMMSS.{png,html,json}
+        Buka file tersebut untuk inspect selector yang tepat.
+        Atau jalankan tools/inspect_quality.py untuk cara lebih mudah.
+        """
+        try:
+            ts        = datetime.datetime.now().strftime("%H%M%S")
+            debug_dir = os.path.join(self.base_dir, "debug")
+            os.makedirs(debug_dir, exist_ok=True)
+
+            # Screenshot
+            ss_path = os.path.join(debug_dir, f"quality_{ts}.png")
+            self.driver.save_screenshot(ss_path)
+            self.log(f"📸 Screenshot → {ss_path}", "WARNING")
+
+            # HTML
+            html_path = os.path.join(debug_dir, f"quality_{ts}.html")
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(self.driver.page_source)
+            self.log(f"📄 HTML dump → {html_path}", "WARNING")
+
+            # Element report
+            raw = self.driver.execute_script("""
+                const SELS = [
+                    'button','[role="button"]','[role="radio"]','[role="tab"]',
+                    'label','[class*="option"]','[class*="quality"]',
+                    '[class*="resolution"]','[class*="select"]','[class*="card"]',
+                    '[class*="pill"]','[class*="btn"]','input[type="radio"]',
+                ];
+                const seen = new Set();
+                const out  = [];
+                for (const sel of SELS) {
+                    let els;
+                    try { els = document.querySelectorAll(sel); } catch(e){ continue; }
+                    for (const el of els) {
+                        if (seen.has(el)) continue; seen.add(el);
+                        const r = el.getBoundingClientRect();
+                        if (r.width===0||r.height===0) continue;
+                        out.push({
+                            tag:  el.tagName,
+                            text: el.textContent.trim().substring(0,70),
+                            cls:  el.className.substring(0,100),
+                            id:   el.id||'',
+                            dv:   el.getAttribute('data-value')||'',
+                            dq:   el.getAttribute('data-quality')||'',
+                            dr:   el.getAttribute('data-resolution')||'',
+                            al:   el.getAttribute('aria-label')||'',
+                            role: el.getAttribute('role')||'',
+                            x: Math.round(r.x), y: Math.round(r.y),
+                            w: Math.round(r.width), h: Math.round(r.height),
+                        });
+                    }
+                }
+                return JSON.stringify(out.slice(0,60));
+            """)
+            items = json.loads(raw or '[]')
+            json_path = os.path.join(debug_dir, f"quality_{ts}.json")
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(items, f, indent=2, ensure_ascii=False)
+            self.log(f"📊 JSON report → {json_path} ({len(items)} items)", "WARNING")
+
+            # Print selector hints langsung ke log
+            kw = ['4k', '2k', '1080', 'quality', 'resolution', 'hd', 'uhd']
+            hints_found = False
+            for it in items:
+                low = (
+                    it.get('text','') + it.get('dv','') +
+                    it.get('al','')  + it.get('cls','')
+                ).lower()
+                if not any(k in low for k in kw):
+                    continue
+                hints_found = True
+                sels = []
+                if it.get('id'): sels.append(f'#{it["id"]}')
+                if it.get('dv'): sels.append(f'[data-value="{it["dv"]}"]')
+                if it.get('dq'): sels.append(f'[data-quality="{it["dq"]}"]')
+                if it.get('dr'): sels.append(f'[data-resolution="{it["dr"]}"]')
+                if it.get('al'): sels.append(f'[aria-label="{it["al"]}"]')
+                txt = it.get('text','').strip()
+                tag = it.get('tag','*').lower()
+                if txt: sels.append(f'//{tag}[normalize-space(.)="{txt}"]')
+                self.log(
+                    f"  🎯 <{it['tag']}> '{it['text'][:30]}' "
+                    f"| best: {sels[0] if sels else '(kosong)'}",
+                    "WARNING"
+                )
+
+            if not hints_found:
+                self.log("  ⚠️ Tidak ada quality element di DOM!", "WARNING")
+                self.log("  -> Kemungkinan butuh waktu lebih untuk render", "WARNING")
+
+            self.log(
+                "💡 Untuk inspect manual, jalankan: python tools/inspect_quality.py",
+                "WARNING"
+            )
+            self.log(
+                "💡 Lalu copy selector ke QUALITY_PRIORITY di background_process.py",
+                "WARNING"
+            )
+        except Exception as e:
+            self.log(f"_debug_dump_quality err: {e}", "INFO")
 
     def _log_quality_elements(self):
         try:
@@ -542,7 +643,27 @@ class A1DProcessor(QThread):
         self.log(f"📺 Pilih kualitas: {q.upper()}", "INFO")
         self._wait_for_quality_options(timeout=15)
 
-        # JS comprehensive click
+        # ── Layer 0: PRIORITY selector (dari tools/inspect_quality.py atau config) ──
+        priority_cfg = self.config.get(f"quality_css_{q}", "").strip()
+        priority_list = list(QUALITY_PRIORITY.get(q, []))
+        if priority_cfg:
+            priority_list.insert(0, priority_cfg)
+
+        for sel in priority_list:
+            try:
+                el = (
+                    self.driver.find_element(By.XPATH, sel)
+                    if sel.startswith("//")
+                    else self.driver.find_element(By.CSS_SELECTOR, sel)
+                )
+                if el.is_displayed():
+                    el.click()
+                    self.log(f"✅ {q.upper()} dipilih (PRIORITY): {sel}", "SUCCESS")
+                    time.sleep(0.5); return
+            except Exception:
+                continue
+
+        # ── Layer 1: JS comprehensive scan ──
         js_result = None
         try:
             js_result = self.driver.execute_script("""
@@ -558,7 +679,7 @@ class A1DProcessor(QThread):
                 ];
                 for (const sel of CLICKABLE) {
                     let els;
-                    try { els = document.querySelectorAll(sel); } catch(e) { continue; }
+                    try { els = document.querySelectorAll(sel); } catch(e){ continue; }
                     for (const el of els) {
                         const rect = el.getBoundingClientRect();
                         if (rect.width===0||rect.height===0) continue;
@@ -597,7 +718,7 @@ class A1DProcessor(QThread):
             self.log(f"✅ {q.upper()} dipilih (JS) text='{parts[2]}'", "SUCCESS")
             time.sleep(0.8); return
 
-        # CSS/XPath fallback
+        # ── Layer 2: CSS/XPath fallback ──
         for sel in self.QUALITY_SELECTORS.get(q, self.QUALITY_SELECTORS["4k"]):
             try:
                 el = (
@@ -612,7 +733,9 @@ class A1DProcessor(QThread):
             except Exception:
                 continue
 
+        # ── Semua gagal: debug dump ──
         self._log_quality_elements()
+        self._debug_dump_quality()          # ← simpan screenshot + JSON ke debug/
         self.log(f"⚠️ Quality {q.upper()} tidak ditemukan — lanjut", "WARNING")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -637,7 +760,6 @@ class A1DProcessor(QThread):
                     time.sleep(2); return
             except NoSuchElementException:
                 continue
-        # JS fallback
         try:
             res = self.driver.execute_script("""
                 const btns = document.querySelectorAll('button');
@@ -657,7 +779,6 @@ class A1DProcessor(QThread):
 
     # ══════════════════════════════════════════════════════════════════════════
     #  WAIT & DOWNLOAD
-    #  Fix .tmp / .crdownload: tunggu Chrome selesai, baru return path .mp4
     # ══════════════════════════════════════════════════════════════════════════
     def _wait_and_download(self, out_dir: str) -> str:
         timeout  = self.config.get("processing_hang_timeout", 1800)
@@ -678,10 +799,8 @@ class A1DProcessor(QThread):
                     tag  = dl_btns[0].tag_name
                     href = dl_btns[0].get_attribute("href")
                     if tag == "a" and href and href.startswith("http"):
-                        # Download via requests (hasilnya langsung .mp4)
                         return self._download_url(href, out_dir)
                     else:
-                        # Click download button → tunggu Chrome selesai
                         before_mp4 = set(
                             f for f in os.listdir(out_dir) if f.endswith(".mp4")
                         )
@@ -707,50 +826,34 @@ class A1DProcessor(QThread):
     def _wait_for_chrome_download(self, out_dir: str,
                                    before_mp4: set,
                                    timeout: int = 300) -> str:
-        """
-        Tunggu Chrome selesai download:
-        - Cek file .crdownload / .tmp hilang
-        - Cek ada .mp4 baru yang tidak ada di before_mp4
-        - Rename .tmp ke .mp4 jika perlu
-        """
         start = time.time()
         while time.time() - start < timeout:
             if self._cancelled: raise InterruptedError("Dibatalkan")
-
             in_progress = [
                 f for f in os.listdir(out_dir)
                 if f.endswith(".crdownload") or f.endswith(".tmp")
             ]
             if in_progress:
                 self.log(f"📥 Downloading... {in_progress[0]}", "INFO")
-                time.sleep(2)
-                continue
-
-            # Cek mp4 baru
+                time.sleep(2); continue
             new_mp4s = sorted(
                 [os.path.join(out_dir, f) for f in os.listdir(out_dir)
                  if f.endswith(".mp4") and f not in before_mp4],
                 key=os.path.getmtime, reverse=True
             )
             if new_mp4s:
-                self.log(f"✅ Download selesai: {os.path.basename(new_mp4s[0])}",
-                         "SUCCESS")
+                self.log(f"✅ Download selesai: {os.path.basename(new_mp4s[0])}", "SUCCESS")
                 return new_mp4s[0]
-
             time.sleep(1.5)
-
-        # Fallback: cari mp4 terbaru di folder
         all_mp4s = sorted(
             [os.path.join(out_dir, f) for f in os.listdir(out_dir)
              if f.endswith(".mp4")],
             key=os.path.getmtime, reverse=True
         )
-        if all_mp4s:
-            return all_mp4s[0]
+        if all_mp4s: return all_mp4s[0]
         raise TimeoutError("❌ Download Chrome tidak selesai")
 
     def _download_url(self, url: str, out_dir: str) -> str:
-        """Download via requests — hasil langsung bernama .mp4 (bukan .tmp)."""
         basename = os.path.splitext(os.path.basename(self.video_path))[0]
         quality  = self.config.get("output_quality", "4k")
         out_path = os.path.join(out_dir, f"{basename}_upscaled_{quality}.mp4")
