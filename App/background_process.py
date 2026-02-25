@@ -14,7 +14,9 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import (
+    TimeoutException, NoSuchElementException, ElementClickInterceptedException
+)
 from PySide6.QtCore import QThread, Signal
 
 from App.firefox_relay import FirefoxRelay
@@ -226,6 +228,51 @@ class A1DProcessor(QThread):
         except Exception as e:
             if not silent:
                 self.log(f"⚠️ CDP: {e}", "WARNING")
+
+    # ══ SAFE CLICK (bypass overlay / ElementClickInterceptedException) ═══════════════
+    def _safe_click(self, element, label: str = "") -> bool:
+        """
+        Klik elemen dengan 3 layer fallback untuk menghindari
+        ElementClickInterceptedException (elemen tertutup overlay/tooltip).
+
+        Priority:
+          1. scrollIntoView + JS element.click()  — bypass overlay sepenuhnya
+          2. ActionChains move_to_element + click  — simulasi mouse lebih alami
+          3. Native .click()                       — last resort
+
+        Returns True jika salah satu layer berhasil.
+        """
+        tag = label or "elemen"
+
+        # Layer 1: JS click — tidak peduli elemen tertutup/intercepted
+        try:
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center',behavior:'instant'});"
+                "arguments[0].click();",
+                element
+            )
+            self.log(f"🔨 JS click: {tag}", "INFO")
+            return True
+        except Exception as e:
+            self.log(f"⚠️ JS click gagal ({tag}): {e}", "INFO")
+
+        # Layer 2: ActionChains
+        try:
+            ActionChains(self.driver).move_to_element(element).click().perform()
+            self.log(f"🔨 ActionChains click: {tag}", "INFO")
+            return True
+        except Exception as e:
+            self.log(f"⚠️ ActionChains gagal ({tag}): {e}", "INFO")
+
+        # Layer 3: Native click
+        try:
+            element.click()
+            self.log(f"🔨 Native click: {tag}", "INFO")
+            return True
+        except Exception as e:
+            self.log(f"❌ Semua click layer gagal ({tag}): {e}", "ERROR")
+
+        return False
 
     # ══ EMAIL (4 layers) ═════════════════════════════════════════════════════════
     def _find_email_field(self):
@@ -610,7 +657,8 @@ class A1DProcessor(QThread):
                 btn = self.driver.find_element(By.XPATH, xpath)
                 if btn.is_displayed() and btn.is_enabled():
                     self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                    btn.click()
+                    # Gunakan _safe_click untuk bypass overlay
+                    self._safe_click(btn, xpath.split("'")[1] if "'" in xpath else "upscale btn")
                     self.log(f"✅ Upscale via: {xpath}", "INFO")
                     time.sleep(2); return
             except NoSuchElementException: continue
@@ -631,29 +679,22 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"⚠️ _start_upscale JS: {e}", "WARNING")
 
-    # ══ EXTRACT URL DARI TOMBOL DOWNLOAD (SotongHD blob technique) ═══════════════
+    # ══ EXTRACT URL DARI TOMBOL DOWNLOAD ═══════════════════════════════════════
     def _extract_url_from_element(self, element) -> dict | None:
         """
         Ekstrak blob/http URL dari elemen tombol Download itu sendiri
         (bukan scan seluruh DOM, untuk menghindari video preview).
-
-        Traverse ke parent tree max 8 level untuk cari href.
-        Juga cek atribut data-* yang berisi URL video.
-
-        Returns:
-          dict {'type': 'blob'|'http', 'url': str} atau None
+        Traverse ke parent tree max 8 level.
         """
         try:
             result = self.driver.execute_script("""
                 let el = arguments[0];
                 for (let i = 0; i < 8; i++) {
-                    // Cek href
                     const href = el.getAttribute('href') || el.href || '';
                     if (href) {
                         if (href.startsWith('blob:')) return {type: 'blob', url: href};
                         if (href.startsWith('http')) return {type: 'http', url: href};
                     }
-                    // Cek atribut data-* yang mengandung URL video
                     for (const attr of el.attributes) {
                         const v = attr.value || '';
                         if (v.startsWith('blob:')) return {type: 'blob', url: v};
@@ -672,13 +713,8 @@ class A1DProcessor(QThread):
             return None
 
     def _download_blob_url(self, blob_url: str, out_path: str) -> str:
-        """
-        SotongHD-style: Download blob:// URL menggunakan JS fetch + FileReader.
-        Blob URL hanya bisa diakses dari dalam konteks halaman (same-origin),
-        sehingga harus dikonversi via JS ke base64 terlebih dahulu.
-        """
+        """Download blob:// URL via JS fetch + FileReader → base64 → file."""
         self.log("📥 Download blob via JS fetch + FileReader...", "INFO")
-
         data_url = self.driver.execute_async_script("""
             const blobUrl = arguments[0];
             const callback = arguments[1];
@@ -692,22 +728,18 @@ class A1DProcessor(QThread):
                 })
                 .catch(() => { callback(null); });
         """, blob_url)
-
         if not data_url:
             raise RuntimeError("❌ Gagal konversi blob ke data URL via FileReader")
-
         _, b64 = data_url.split(',', 1)
         data_bytes = base64.b64decode(b64)
-
         with open(out_path, 'wb') as f:
             f.write(data_bytes)
-
         size_mb = len(data_bytes) / 1048576
         self.log(f"✅ Blob tersimpan: {os.path.basename(out_path)} ({size_mb:.1f} MB)", "SUCCESS")
         return out_path
 
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
-        """Buat path output yang unik, tidak overwrite file existing."""
+        """Buat path output unik, tidak overwrite file existing."""
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
         out     = os.path.join(out_dir, f"{base}_upscaled_{quality}{ext}")
@@ -721,15 +753,12 @@ class A1DProcessor(QThread):
     def _wait_and_download(self, out_dir: str) -> str:
         """
         Tunggu tombol Download muncul (sinyal upscale selesai),
-        lalu download hasil dengan 3 layer:
+        lalu download hasil:
 
           [L1] Ambil URL dari tombol Download itu sendiri:
-               - blob: href → _download_blob_url() via JS fetch+FileReader
-               - http: href → _download_url() via requests
-          [L2] Fallback: klik tombol → _wait_for_chrome_download()
-
-        NOTE: Tidak scan seluruh DOM (menghindari menangkap video preview
-        yang ada sebelum upscale selesai).
+               blob: → _download_blob_url() | http: → _download_url()
+          [L2] Fallback: _safe_click(tombol) → _wait_for_chrome_download()
+               _safe_click memakai JS click untuk bypass overlay/interceptor.
         """
         timeout       = self.config.get("processing_hang_timeout", 1800)
         start         = time.time()
@@ -761,23 +790,21 @@ class A1DProcessor(QThread):
                 self.prog(92, "Mendownload video...")
                 self._apply_download_cdp(out_dir, silent=True)
 
-                # ─ L1: Ambil URL dari tombol itu sendiri ───────────────────
+                # ─ L1: URL dari tombol itu sendiri ──────────────────────
                 dl_url = self._extract_url_from_element(dl_btns_cache[0])
 
                 if dl_url:
                     url_type = dl_url.get('type', '')
                     url      = dl_url.get('url', '')
                     self.log(f"🎯 [L1] {url_type.upper()} URL dari tombol Download", "INFO")
-
                     if url_type == 'http':
                         return self._download_url(url, out_dir)
-
                     if url_type == 'blob':
                         out_path = self._build_output_path(out_dir)
                         return self._download_blob_url(url, out_path)
 
-                # ─ L2: Fallback — klik tombol, tunggu Chrome download ──────
-                self.log("⏳ [L2] Klik tombol Download, tunggu Chrome...", "INFO")
+                # ─ L2: Fallback — klik tombol via _safe_click (bypass overlay) ─
+                self.log("⏳ [L2] Klik tombol Download via safe_click...", "INFO")
 
                 default_dl      = os.path.join(os.path.expanduser("~"), "Downloads")
                 dl_snapshot_pre = set()
@@ -787,7 +814,9 @@ class A1DProcessor(QThread):
 
                 before_out = set(os.listdir(out_dir))
                 click_time = time.time()
-                dl_btns_cache[0].click()
+
+                # Pakai _safe_click: JS click → ActionChains → native .click()
+                self._safe_click(dl_btns_cache[0], "Download button")
 
                 return self._wait_for_chrome_download(
                     out_dir, before_out, dl_snapshot_pre, click_time, timeout=600
@@ -813,13 +842,7 @@ class A1DProcessor(QThread):
     ) -> str:
         """
         Tunggu Chrome selesai download lalu kembalikan path file.
-
-        Strategi (urutan prioritas):
-          1. File baru di out_dir (CDP berhasil mengarahkan ke out_dir)
-          2. File baru di ~/Downloads berdasarkan SNAPSHOT (dl_snapshot_pre)
-             diambil SEBELUM klik → akurat mendeteksi GUID.tmp
-          3. File di ~/Downloads berdasarkan mtime >= click_time (fallback timing)
-          4. .tmp stabil (ukuran tidak berubah, > 500 KB) → rename ke .mp4
+        Prioritas: out_dir (CDP) → ~/Downloads snapshot → mtime fallback.
         """
         start      = time.time()
         default_dl = os.path.join(os.path.expanduser("~"), "Downloads")
