@@ -1,46 +1,30 @@
 import os
 import time
-from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker
+import threading
+from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker, Qt
 
 from App.background_process import A1DProcessor
 
-# ── Batas absolut ──────────────────────────────────────────────────────────────────
-MAX_PARALLEL_LIMIT  = 5    # hard cap — tidak bisa melebihi angka ini
-DEFAULT_WORKERS     = 3    # default jika tidak di-set di config
-DEFAULT_STAGGER     = 15   # detik jeda antar worker (default)
-# ──────────────────────────────────────────────────────────────────
-
-# Keys yang dibaca dari config dict
-# ------------------------------------------------
-# "max_workers"         int  1–5   jumlah worker paralel
-# "batch_stagger_delay" int  ≥0    jeda detik antar worker start
-# ------------------------------------------------
+# ─ Hard limits ──────────────────────────────────────────────────────────────
+MAX_PARALLEL_LIMIT = 5
+DEFAULT_WORKERS    = 3
+DEFAULT_STAGGER    = 15
 
 
 class BatchProcessor(QThread):
     """
     Jalankan beberapa A1DProcessor secara paralel.
 
-    Jumlah worker dan stagger delay dikontrol dari config:
+    BUG-FIX v2.4.1:
+    ----------------
+    Sebelumnya memakai w.wait() di dalam QThread.run() yang memblokir
+    event queue BatchProcessor — sehingga queued signals dari worker
+    tidak bisa diproses dan log tidak muncul di UI.
 
-        config["max_workers"]         = 1–5   (default 3)
-        config["batch_stagger_delay"] = detik  (default 15)
-
-    Signals
-    -------
-    log_signal(str, str)
-        Log dari semua worker, prefix [W1/N] dll.
-
-    progress_signal(int, str)
-        Rata-rata progress semua worker (0–100).
-
-    worker_done(int, bool, str)
-        Dipancarkan setiap kali satu worker selesai.
-        (worker_index, success, output_path_or_error)
-
-    finished_signal(bool, str, list)
-        Dipancarkan setelah SEMUA worker selesai.
-        (all_ok, summary_text, [(ok, path_or_err), ...])
+    Fix:
+      1. Qt.DirectConnection → slot langsung dipanggil di thread worker
+         (tidak perlu event-loop BatchProcessor).
+      2. threading.Event  → ganti w.wait() agar tidak blokir sama sekali.
     """
 
     log_signal      = Signal(str, str)
@@ -53,52 +37,43 @@ class BatchProcessor(QThread):
         if not video_paths:
             raise ValueError("video_paths tidak boleh kosong")
 
-        # ─ Baca setting dari config, clamp ke batas aman ───────────────────
         cfg_workers = config.get("max_workers", DEFAULT_WORKERS)
-        try:
-            cfg_workers = int(cfg_workers)
-        except (TypeError, ValueError):
-            cfg_workers = DEFAULT_WORKERS
+        try:    cfg_workers = int(cfg_workers)
+        except: cfg_workers = DEFAULT_WORKERS
 
         cfg_stagger = config.get("batch_stagger_delay", DEFAULT_STAGGER)
-        try:
-            cfg_stagger = int(cfg_stagger)
-        except (TypeError, ValueError):
-            cfg_stagger = DEFAULT_STAGGER
+        try:    cfg_stagger = int(cfg_stagger)
+        except: cfg_stagger = DEFAULT_STAGGER
 
-        # Clamp
-        self.max_workers   = max(1, min(cfg_workers, MAX_PARALLEL_LIMIT))  # 1–5
-        self.stagger_delay = max(0, cfg_stagger)                            # ≥0 detik
-
-        self.base_dir    = base_dir
-        self.video_paths = video_paths[:self.max_workers]   # potong sesuai max_workers
-        self.config      = config
+        self.max_workers   = max(1, min(cfg_workers, MAX_PARALLEL_LIMIT))
+        self.stagger_delay = max(0, cfg_stagger)
+        self.base_dir      = base_dir
+        self.video_paths   = video_paths[:self.max_workers]
+        self.config        = config
 
         self._workers:  list[A1DProcessor]          = []
         self._cancelled = False
         self._mutex     = QMutex()
-        self._results:  dict[int, tuple[bool, str]] = {}    # {idx: (ok, path_or_err)}
-        self._pct_map:  dict[int, int]              = {}    # {idx: pct}
+        self._results:  dict[int, tuple[bool, str]] = {}
+        self._pct_map:  dict[int, int]              = {}
 
-    # ══ PUBLIC ════════════════════════════════════════════════════════════════════
+        # ✔ FIX 1: threading.Event menggantikan w.wait() yang memblokir
+        self._all_done = threading.Event()
+
+    # ═ PUBLIC ═════════════════════════════════════════════════════
     def cancel(self):
-        """Cancel semua worker yang sedang berjalan."""
         self._cancelled = True
+        self._all_done.set()   # unblock waiting thread
         for w in self._workers:
-            try:
-                w.cancel()
-            except Exception:
-                pass
+            try: w.cancel()
+            except: pass
 
     @staticmethod
     def clamp_workers(value) -> int:
-        """Helper: clamp nilai worker ke 1–5 (berguna untuk validasi di UI)."""
-        try:
-            return max(1, min(int(value), MAX_PARALLEL_LIMIT))
-        except (TypeError, ValueError):
-            return DEFAULT_WORKERS
+        try:    return max(1, min(int(value), MAX_PARALLEL_LIMIT))
+        except: return DEFAULT_WORKERS
 
-    # ══ HELPERS ════════════════════════════════════════════════════════════════════
+    # ═ HELPERS ══════════════════════════════════════════════════
     def _log(self, msg: str, level: str = "INFO"):
         self.log_signal.emit(msg, level)
 
@@ -110,8 +85,9 @@ class BatchProcessor(QThread):
             vals = list(self._pct_map.values())
         return int(sum(vals) / max(len(vals), 1))
 
-    # ══ SLOT ─ per-worker events ════════════════════════════════════════════════
+    # ═ SLOTS ═ dipanggil via Qt.DirectConnection (langsung dari thread worker) ════
     def _on_worker_log(self, idx: int, n: int, msg: str, level: str):
+        # Emitting dari worker-thread → ke main-thread via QueuedConnection otomatis
         self.log_signal.emit(f"[W{idx+1}/{n}] {msg}", level)
 
     def _on_worker_progress(self, idx: int, pct: int, msg: str):
@@ -125,31 +101,35 @@ class BatchProcessor(QThread):
             self._results[idx] = (ok, path_or_err)
             self._pct_map[idx] = 100
             done = len(self._results)
+
         n    = len(self.video_paths)
         icon = "✅" if ok else "❌"
-        self._log(
+        self.log_signal.emit(
             f"{icon} W{idx+1}/{n} SELESAI — {path_or_err}",
             "SUCCESS" if ok else "ERROR"
         )
         self.worker_done.emit(idx, ok, path_or_err)
-        self._prog(min(99, self._avg_pct()), f"Selesai {done}/{n} video")
+        self.progress_signal.emit(min(99, self._avg_pct()), f"Selesai {done}/{n} video")
 
-    # ══ MAIN RUN ══════════════════════════════════════════════════════════════════
+        # ✔ FIX 1: Set event ketika SEMUA worker sudah selesai
+        if done >= n:
+            self._all_done.set()
+
+    # ═ MAIN RUN ══════════════════════════════════════════════════════
     def run(self):
         n = len(self.video_paths)
 
-        self._log(f"🚀 Batch START", "INFO")
-        self._log(f"   ├ Workers  : {self.max_workers} (max {MAX_PARALLEL_LIMIT})", "INFO")
-        self._log(f"   ├ Video     : {n} file", "INFO")
-        self._log(f"   └ Stagger   : {self.stagger_delay}s antar worker", "INFO")
+        self._log("🚀 Batch START", "INFO")
+        self._log(f"├ Workers  : {self.max_workers} (max {MAX_PARALLEL_LIMIT})", "INFO")
+        self._log(f"├ Video     : {n} file", "INFO")
+        self._log(f"└ Stagger   : {self.stagger_delay}s antar worker", "INFO")
         self._log("-" * 56, "INFO")
         self._prog(0, f"Batch: 0/{n} selesai")
 
-        # Init pct map
         for i in range(n):
             self._pct_map[i] = 0
 
-        # ─ Buat & start worker satu-per-satu dengan stagger ──────────────────────
+        # ─ Start workers satu per satu dengan stagger ───────────────────────────
         for idx, vpath in enumerate(self.video_paths):
             if self._cancelled:
                 self._log("⚠️ Batch dibatalkan sebelum semua worker start", "WARNING")
@@ -157,17 +137,20 @@ class BatchProcessor(QThread):
 
             worker = A1DProcessor(self.base_dir, vpath, self.config)
 
+            # ✔ FIX 2: Qt.DirectConnection → slot dipanggil LANGSUNG di worker-thread
+            #    Tidak bergantung pada event-loop BatchProcessor yang sedang berjalan
             worker.log_signal.connect(
-                lambda msg, lvl, i=idx, total=n:
-                    self._on_worker_log(i, total, msg, lvl)
+                lambda msg, lvl, i=idx, total=n: self._on_worker_log(i, total, msg, lvl),
+                Qt.DirectConnection
             )
             worker.progress_signal.connect(
-                lambda pct, msg, i=idx:
-                    self._on_worker_progress(i, pct, msg)
+                lambda pct, msg, i=idx: self._on_worker_progress(i, pct, msg),
+                Qt.DirectConnection
             )
             worker.finished_signal.connect(
                 lambda ok, msg, path, i=idx:
-                    self._on_worker_finished(i, ok, path if ok else msg)
+                    self._on_worker_finished(i, ok, path if ok else msg),
+                Qt.DirectConnection
             )
 
             self._workers.append(worker)
@@ -177,10 +160,9 @@ class BatchProcessor(QThread):
                 "INFO"
             )
 
-            # Stagger (0 = tidak ada jeda)
             if self.stagger_delay > 0 and idx < n - 1 and not self._cancelled:
                 self._log(
-                    f"   ⏸ Stagger {self.stagger_delay}s sebelum Worker {idx+2}/{n}...",
+                    f"  ⏸ Stagger {self.stagger_delay}s sebelum Worker {idx+2}/{n}...",
                     "INFO"
                 )
                 for _ in range(self.stagger_delay):
@@ -188,12 +170,25 @@ class BatchProcessor(QThread):
                         break
                     time.sleep(1)
 
-        # ─ Tunggu semua worker selesai ──────────────────────────────────────────
+        # ─ Tunggu sampai semua worker selesai ──────────────────────────────────
+        # ✔ FIX 1: threading.Event.wait() — TIDAK memblokir Qt event queue.
+        #    Sinyal log & progress dari worker tetap mengalir ke UI selama menunggu.
         self._log("⏳ Menunggu semua worker selesai...", "INFO")
-        for w in self._workers:
-            w.wait()
+        max_wait_sec = self.config.get("processing_hang_timeout", 1800) + 300
+        finished_in_time = self._all_done.wait(timeout=max_wait_sec)
 
-        # ─ Summary ────────────────────────────────────────────────────────────────
+        if not finished_in_time and not self._cancelled:
+            self._log(
+                f"⚠️ Timeout {max_wait_sec // 60} menit — ada worker yang tidak selesai!",
+                "WARNING"
+            )
+
+        # Graceful cleanup: tunggu thread benar-benar berhenti (max 10s per worker)
+        for w in self._workers:
+            if w.isRunning():
+                w.wait(msecs=10_000)
+
+        # ─ Summary ──────────────────────────────────────────────────────────────
         n_ok   = sum(1 for ok, _ in self._results.values() if ok)
         n_fail = n - n_ok
         all_ok = n_fail == 0

@@ -25,10 +25,10 @@ from App.batch_processor import BatchProcessor, MAX_PARALLEL_LIMIT, DEFAULT_WORK
 
 CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
 APP_NAME    = "A1D Video Upscaler"
-APP_VER     = "2.4.0"
+APP_VER     = "2.4.1"
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  THEME PALETTES  —  Dark (default) & Light
+#  THEME PALETTES
 # ══════════════════════════════════════════════════════════════════════════════
 THEMES = {
     "dark": {
@@ -37,28 +37,28 @@ THEMES = {
         "surface":   "#21262D",
         "input":     "#0D1117",
         "border":    "#30363D",
-        "primary":   "#A78BFA",   # bright violet
-        "primary_h": "#C4B5FD",   # lighter violet
-        "accent":    "#60A5FA",   # blue
-        "text":      "#FFFFFF",   # crisp white
-        "text_dim":  "#E2E8F0",   # very visible light grey
-        "text_muted":"#9CA3AF",   # secondary text
+        "primary":   "#A78BFA",
+        "primary_h": "#C4B5FD",
+        "accent":    "#60A5FA",
+        "text":      "#FFFFFF",
+        "text_dim":  "#E2E8F0",
+        "text_muted":"#9CA3AF",
         "success":   "#3FB950",
         "warning":   "#D29922",
         "error":     "#F85149",
         "log_bg":    "#010409",
     },
     "light": {
-        "bg":        "#F3F4F6",   # light grey bg
+        "bg":        "#F3F4F6",
         "sidebar":   "#FFFFFF",
         "surface":   "#FFFFFF",
         "input":     "#F9FAFB",
         "border":    "#D1D5DB",
-        "primary":   "#7C3AED",   # deep violet
+        "primary":   "#7C3AED",
         "primary_h": "#6D28D9",
-        "accent":    "#2563EB",   # blue
-        "text":      "#111827",   # near-black
-        "text_dim":  "#374151",   # dark grey
+        "accent":    "#2563EB",
+        "text":      "#111827",
+        "text_dim":  "#374151",
         "text_muted":"#6B7280",
         "success":   "#10B981",
         "warning":   "#D97706",
@@ -67,7 +67,6 @@ THEMES = {
     },
 }
 
-# ── Dynamic Pointer to Active Palette ──
 C = dict(THEMES["dark"])
 
 
@@ -154,6 +153,7 @@ QProgressBar::chunk {{
 }}
 """
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CUSTOM WIDGETS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -230,14 +230,15 @@ class LogViewer(QTextEdit):
     def append_log(self, msg, level="INFO"):
         if isinstance(msg, tuple): msg = str(msg[0])
         ml = msg.lower()
-        if   "error" in ml or "failed" in ml:    color = C['error']
+        if   "error" in ml or "failed" in ml:      color = C['error']
         elif "success" in ml or "completed" in ml: color = C['success']
+        elif "selesai" in ml or "berhasil" in ml:  color = C['success']
         elif "warning" in ml or "timeout" in ml:   color = C['warning']
         elif "worker" in ml or "batch" in ml:      color = C['accent']
-        elif level == "SUCCESS":                   color = C['success']
-        elif level == "ERROR":                     color = C['error']
-        elif level == "WARNING":                   color = C['warning']
-        else:                                      color = C['text']
+        elif level == "SUCCESS":                    color = C['success']
+        elif level == "ERROR":                      color = C['error']
+        elif level == "WARNING":                    color = C['warning']
+        else:                                       color = C['text']
 
         ts   = datetime.datetime.now().strftime("%H:%M:%S")
         html = f'<span style="color:{C["text_muted"]}">[{ts}]</span> <span style="color:{color}">{msg}</span>'
@@ -254,11 +255,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {APP_VER}")
         self.resize(1150, 780)
         self.config = self._load_config()
-        
-        # Determine startup theme
+
         self._current_theme_name = self.config.get("theme", "dark")
         self._apply_theme_colors(self._current_theme_name)
-        
+
         self._video_paths = []
         self.processor = None
         self._running = False
@@ -291,25 +291,16 @@ class MainWindow(QMainWindow):
     def _toggle_theme(self):
         new_theme = "light" if self._current_theme_name == "dark" else "dark"
         self._apply_theme_colors(new_theme)
-        
-        # Apply new stylesheet entirely
-        app = QApplication.instance()
-        app.setStyleSheet(build_stylesheet(C))
-        
-        # Manually refresh custom styled widgets
+        QApplication.instance().setStyleSheet(build_stylesheet(C))
         self._refresh_static_labels()
         self.drop_zone.refresh_theme()
         self.log_viewer.refresh_theme()
         self._update_nav_style()
-        self._set_running(self._running) # Refresh dot color
-
-        # Update button text
+        self._set_running(self._running)
         ico = "fa5s.sun" if new_theme == "dark" else "fa5s.moon"
         lbl = "Light Mode" if new_theme == "dark" else "Dark Mode"
         self.btn_theme.setIcon(qta.icon(ico, color=C['text_dim']))
         self.btn_theme.setText(f" {lbl}")
-        
-        # Save change
         try:
             with open(CONFIG_PATH, "w") as f: json.dump(self.config, f, indent=2)
         except: pass
@@ -317,16 +308,12 @@ class MainWindow(QMainWindow):
     def _refresh_static_labels(self):
         self.title_top.setStyleSheet(f"font-size: 32px; font-weight: 900; color: {C['primary']};")
         self.title_bot.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {C['text']}; letter-spacing: 2px;")
-        
         self.count_badge.setStyleSheet(
             f"background: {C['primary']}22; color: {C['primary']};"
             f" font-weight: 800; font-size: 11px; padding: 6px 14px; border-radius: 15px;"
         )
-        
-        # Refresh dynamic list icons
         for i in range(self.file_list.count()):
             self.file_list.item(i).setIcon(qta.icon("fa5s.film", color=C['primary']))
-            
         self.btn_add.setIcon(qta.icon("fa5s.folder-plus", color=C['text']))
         self.btn_clear_log.setIcon(qta.icon("fa5s.eraser", color=C['text']))
         self.btn_browse.setIcon(qta.icon("fa5s.folder-open", color=C['text']))
@@ -338,7 +325,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── SIDEBAR ─────────────────────────────────────────────────────
         sidebar = QWidget()
         sidebar.setObjectName("Sidebar")
         sidebar.setFixedWidth(250)
@@ -352,27 +338,25 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.title_bot)
         sb_layout.addSpacing(30)
 
-        self.btn_queue = self._create_nav_btn("Dashboard", "fa5s.home", 0)
-        self.btn_settings = self._create_nav_btn("Settings", "fa5s.cogs", 1)
-        self.btn_logs = self._create_nav_btn("Worker Logs", "fa5s.terminal", 2)
+        self.btn_queue    = self._create_nav_btn("Dashboard",   "fa5s.home",     0)
+        self.btn_settings = self._create_nav_btn("Settings",    "fa5s.cogs",     1)
+        self.btn_logs     = self._create_nav_btn("Worker Logs", "fa5s.terminal", 2)
         sb_layout.addWidget(self.btn_queue)
         sb_layout.addWidget(self.btn_settings)
         sb_layout.addWidget(self.btn_logs)
         sb_layout.addStretch()
 
-        # Theme Switcher
         self.btn_theme = QPushButton()
         self.btn_theme.setObjectName("ThemeBtn")
         self.btn_theme.clicked.connect(self._toggle_theme)
         sb_layout.addWidget(self.btn_theme)
         sb_layout.addSpacing(10)
 
-        # Status
         status_card = QFrame()
         status_card.setObjectName("Card")
         sc_layout = QVBoxLayout(status_card)
         sc_layout.setContentsMargins(15, 12, 15, 12)
-        self.status_dot = QLabel("●")
+        self.status_dot  = QLabel("●")
         self.status_text = QLabel("IDLE MODE")
         self.status_text.setObjectName("Sub")
         row = QHBoxLayout()
@@ -381,20 +365,17 @@ class MainWindow(QMainWindow):
         row.addStretch()
         sc_layout.addLayout(row)
         sb_layout.addWidget(status_card)
-        
+
         ver_lbl = QLabel(f"v{APP_VER}")
         ver_lbl.setObjectName("Sub")
         ver_lbl.setAlignment(Qt.AlignCenter)
         sb_layout.addWidget(ver_lbl)
 
-        # ── STACK ───────────────────────────────────────────────────────
         self.stack = QStackedWidget()
         self.stack.setObjectName("MainContent")
-
-        self.page_queue = self._build_queue_page()
+        self.page_queue    = self._build_queue_page()
         self.page_settings = self._build_settings_page()
-        self.page_logs = self._build_logs_page()
-
+        self.page_logs     = self._build_logs_page()
         self.stack.addWidget(self.page_queue)
         self.stack.addWidget(self.page_settings)
         self.stack.addWidget(self.page_logs)
@@ -402,11 +383,8 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar)
         main_layout.addWidget(self.stack)
         self.btn_queue.setChecked(True)
-        
-        # Init static labels styles
         self._refresh_static_labels()
-        
-        # Init Theme Button State
+
         ico = "fa5s.sun" if self._current_theme_name == "dark" else "fa5s.moon"
         lbl = "Light Mode" if self._current_theme_name == "dark" else "Dark Mode"
         self.btn_theme.setIcon(qta.icon(ico, color=C['text_dim']))
@@ -426,12 +404,11 @@ class MainWindow(QMainWindow):
         return btn
 
     def _update_nav_style(self):
-        buttons = [
-            (self.btn_queue, "fa5s.home"),
+        for btn, icon in [
+            (self.btn_queue,    "fa5s.home"),
             (self.btn_settings, "fa5s.cogs"),
-            (self.btn_logs, "fa5s.terminal"),
-        ]
-        for btn, icon in buttons:
+            (self.btn_logs,     "fa5s.terminal"),
+        ]:
             color = C['primary'] if btn.isChecked() else C['text_dim']
             btn.setIcon(qta.icon(icon, color=color))
 
@@ -451,7 +428,6 @@ class MainWindow(QMainWindow):
         welcome.addWidget(sub)
         top.addLayout(welcome)
         top.addStretch()
-
         self.count_badge = QLabel("0 QUEUED")
         top.addWidget(self.count_badge, alignment=Qt.AlignVCenter)
         layout.addLayout(top)
@@ -465,11 +441,11 @@ class MainWindow(QMainWindow):
 
         ctrls = QHBoxLayout()
         self.btn_add = QPushButton(" Browse Media")
+        self.btn_add.setIcon(qta.icon("fa5s.folder-plus", color=C['text']))
         self.btn_add.clicked.connect(self._browse_files)
         self.btn_clear = QPushButton(" Clear Queue")
         self.btn_clear.setIcon(qta.icon("fa5s.trash", color=C['error']))
         self.btn_clear.clicked.connect(self._clear_files)
-
         ctrls.addWidget(self.btn_add)
         ctrls.addWidget(self.btn_clear)
         ctrls.addStretch()
@@ -539,7 +515,7 @@ class MainWindow(QMainWindow):
         self.inp_api_key.setEchoMode(QLineEdit.Password)
         self.inp_url = QLineEdit()
         f_api.addRow("Firefox Relay API Key:", self.inp_api_key)
-        f_api.addRow("Target Service URL:", self.inp_url)
+        f_api.addRow("Target Service URL:",    self.inp_url)
         layout.addWidget(g_api)
 
         g_out, f_out = create_group("Output Engine", "fa5s.video")
@@ -547,12 +523,13 @@ class MainWindow(QMainWindow):
         self.combo_quality.addItems(["4k", "2k", "1080p"])
         self.inp_out_dir = QLineEdit()
         self.btn_browse = QToolButton()
+        self.btn_browse.setIcon(qta.icon("fa5s.folder-open", color=C['text']))
         self.btn_browse.clicked.connect(self._browse_output)
         h_dir = QHBoxLayout()
         h_dir.addWidget(self.inp_out_dir)
         h_dir.addWidget(self.btn_browse)
         f_out.addRow("Target Resolution:", self.combo_quality)
-        f_out.addRow("Export Path:", h_dir)
+        f_out.addRow("Export Path:",       h_dir)
         layout.addWidget(g_out)
 
         g_perf, f_perf = create_group("Workers & Advanced Performance", "fa5s.microchip")
@@ -567,12 +544,11 @@ class MainWindow(QMainWindow):
         self.spin_render_timeout.setRange(300, 7200)
         self.spin_render_timeout.setSuffix(" sec")
         self.chk_headless = QCheckBox("Enable Background Execution (Silent Browser)")
-        
         f_perf.addRow("Parallel Tasks (Max Workers):", self.spin_workers)
-        f_perf.addRow("Batch Stagger Delay:", self.spin_stagger)
-        f_perf.addRow("Download Timeout:", self.spin_dl_timeout)
-        f_perf.addRow("Processing Timeout:", self.spin_render_timeout)
-        f_perf.addRow("", self.chk_headless)
+        f_perf.addRow("Batch Stagger Delay:",          self.spin_stagger)
+        f_perf.addRow("Download Timeout:",             self.spin_dl_timeout)
+        f_perf.addRow("Processing Timeout:",           self.spin_render_timeout)
+        f_perf.addRow("",                              self.chk_headless)
         layout.addWidget(g_perf)
 
         btn_save = QPushButton("Save Configurations")
@@ -598,7 +574,8 @@ class MainWindow(QMainWindow):
         header.addStretch()
 
         self.btn_clear_log = QPushButton(" Clear Logs")
-        self.btn_clear_log.setMaximumWidth(120)
+        self.btn_clear_log.setIcon(qta.icon("fa5s.eraser", color=C['text']))
+        self.btn_clear_log.setMaximumWidth(130)
         header.addWidget(self.btn_clear_log)
 
         self.log_viewer = LogViewer()
@@ -608,8 +585,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log_viewer)
         return page
 
-    # ── LOGIC ────────────────────────────────────────────────────────────
-
+    # ─ LOGIC ────────────────────────────────────────────────────────────
     def _load_settings_to_ui(self):
         c = self.config
         self.inp_api_key.setText(c.get("relay_api_key", ""))
@@ -624,16 +600,16 @@ class MainWindow(QMainWindow):
 
     def _save_config_ui(self):
         self.config.update({
-            "relay_api_key": self.inp_api_key.text().strip(),
-            "a1d_url": self.inp_url.text().strip(),
-            "output_quality": self.combo_quality.currentText().lower(),
-            "output_dir": self.inp_out_dir.text().strip(),
-            "max_workers": self.spin_workers.value(),
-            "batch_stagger_delay": self.spin_stagger.value(),
-            "headless": self.chk_headless.isChecked(),
-            "download_timeout": self.spin_dl_timeout.value(),
-            "processing_hang_timeout": self.spin_render_timeout.value(),
-            "theme": self._current_theme_name
+            "relay_api_key":          self.inp_api_key.text().strip(),
+            "a1d_url":                self.inp_url.text().strip(),
+            "output_quality":         self.combo_quality.currentText().lower(),
+            "output_dir":             self.inp_out_dir.text().strip(),
+            "max_workers":            self.spin_workers.value(),
+            "batch_stagger_delay":    self.spin_stagger.value(),
+            "headless":               self.chk_headless.isChecked(),
+            "download_timeout":       self.spin_dl_timeout.value(),
+            "processing_hang_timeout":self.spin_render_timeout.value(),
+            "theme":                  self._current_theme_name,
         })
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -687,24 +663,35 @@ class MainWindow(QMainWindow):
             self._log("Missing Firefox Relay API Key. Please update Configuration.", "ERROR")
             self.btn_settings.click()
             return
-            
+
         self._save_config_ui()
         self._set_running(True)
         cfg = dict(self.config)
-        
+
         self._log("=========================================")
         self._log(f"Initializing SotongHD Engine - {len(self._video_paths)} files")
         self._log(f"Workers: {cfg.get('max_workers', 1)} | Target: {cfg.get('output_quality', '4k').upper()}")
         self._log("=========================================")
-        
+
         if len(self._video_paths) == 1:
+            # ─ Single file: finished_signal = Signal(bool, str, str) ────────────────
             self.processor = A1DProcessor(_PROJECT_ROOT, self._video_paths[0], cfg)
+            self.processor.log_signal.connect(self._log)
+            self.processor.progress_signal.connect(self._on_progress)
+            # ✔ FIX: lambda wrapper discards 3rd arg (output_path)
+            self.processor.finished_signal.connect(
+                lambda ok, msg, _path: self._on_finished(ok, msg)
+            )
         else:
+            # ─ Batch: finished_signal = Signal(bool, str, list) ────────────────
             self.processor = BatchProcessor(_PROJECT_ROOT, self._video_paths, cfg)
-            
-        self.processor.log_signal.connect(self._log)
-        self.processor.progress_signal.connect(self._on_progress)
-        self.processor.finished_signal.connect(self._on_finished)
+            self.processor.log_signal.connect(self._log)
+            self.processor.progress_signal.connect(self._on_progress)
+            # ✔ FIX: lambda wrapper discards 3rd arg (results list)
+            self.processor.finished_signal.connect(
+                lambda ok, msg, _results: self._on_finished(ok, msg)
+            )
+
         self.processor.start()
 
     def _set_running(self, running):
@@ -721,9 +708,9 @@ class MainWindow(QMainWindow):
         self.pbar.setValue(pct)
         self.p_label.setText(msg)
 
-    def _on_finished(self, ok, msg):
+    def _on_finished(self, ok: bool, msg: str):
         self._set_running(False)
-        self.p_label.setText("Batch processing completed!" if ok else f"Process aborted or failed.")
+        self.p_label.setText("Batch processing completed!" if ok else "Process aborted or failed.")
         self._log(f"Final Status: {msg}", "SUCCESS" if ok else "ERROR")
 
     def _cancel(self):
@@ -736,14 +723,10 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VER)
-    
     font = QFont("Inter", 10)
     font.setStyleHint(QFont.SansSerif)
     app.setFont(font)
-    
-    # Init Default Style
     app.setStyleSheet(build_stylesheet(C))
-    
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
