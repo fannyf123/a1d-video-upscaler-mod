@@ -31,12 +31,7 @@ QUALITY_TEXTS = {
 }
 
 # ── QUALITY_PRIORITY: isi dari hasil tools/inspect_quality.py ───────────────
-QUALITY_PRIORITY: dict[str, list[str]] = {
-    # Contoh (ganti dengan hasil inspect_quality.py):
-    # "4k":    ['[data-value="4k"]', '//button[normalize-space(.)="4K"]'],
-    # "2k":    ['[data-value="2k"]'],
-    # "1080p": ['[data-value="1080p"]'],
-}
+QUALITY_PRIORITY: dict[str, list[str]] = {}
 
 
 class A1DProcessor(QThread):
@@ -120,12 +115,13 @@ class A1DProcessor(QThread):
         # ── Tentukan output dir ──────────────────────────────────────────────
         out_dir_custom = self.config.get("output_dir", "").strip()
         if out_dir_custom and os.path.isdir(out_dir_custom):
-            out_dir = out_dir_custom
-            self.log(f"📁 Output (custom): {out_dir}", "INFO")
+            raw_dir = out_dir_custom
         else:
-            out_dir = os.path.join(os.path.dirname(self.video_path), "OUTPUT")
-            self.log(f"📁 Output (default): {out_dir}", "INFO")
+            raw_dir = os.path.join(os.path.dirname(self.video_path), "OUTPUT")
+        # FIX: normalisasi path — hapus mixed slash (D:/...\ → D:\...\)
+        out_dir = os.path.normpath(os.path.abspath(raw_dir))
         os.makedirs(out_dir, exist_ok=True)
+        self.log(f"📁 Output: {out_dir}", "INFO")
 
         # Step 2: ChromeDriver setup
         drv_name = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
@@ -146,6 +142,7 @@ class A1DProcessor(QThread):
         )
         opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         opts.add_experimental_option("useAutomationExtension", False)
+        # FIX: gunakan out_dir yang sudah di-normpath sebagai default_directory
         opts.add_experimental_option("prefs", {
             "download.default_directory":               out_dir,
             "download.prompt_for_download":              False,
@@ -162,9 +159,8 @@ class A1DProcessor(QThread):
         self.driver.set_page_load_timeout(60)
         wait = WebDriverWait(self.driver, 30)
 
-        # ── CDP setDownloadBehavior ─────────────────────────────────────────────
-        self._apply_download_cdp(out_dir)
-        # ───────────────────────────────────────────────────────────────────
+        # CDP setDownloadBehavior (hanya dipanggil sekali saat init, dengan log)
+        self._apply_download_cdp(out_dir, silent=False)
 
         try:
             # Step 3: Buka SIGN-IN
@@ -248,16 +244,21 @@ class A1DProcessor(QThread):
 
         return out_path
 
-    # ── Helper: apply CDP download behavior (dipanggil berulang kali) ──
-    def _apply_download_cdp(self, out_dir: str):
+    # ── Helper: apply CDP download behavior ────────────────────────────────────
+    # silent=True: jangan print log (supaya tidak spam saat dipanggil ulang)
+    def _apply_download_cdp(self, out_dir: str, silent: bool = False):
+        # Selalu normpath supaya Chrome tidak bingung dengan mixed slash
+        normalized = os.path.normpath(os.path.abspath(out_dir))
         try:
             self.driver.execute_cdp_cmd("Page.setDownloadBehavior", {
                 "behavior":     "allow",
-                "downloadPath": out_dir,
+                "downloadPath": normalized,
             })
-            self.log(f"✅ CDP download → {out_dir}", "INFO")
+            if not silent:
+                self.log(f"✅ CDP download path: {normalized}", "INFO")
         except Exception as e:
-            self.log(f"⚠️ CDP setDownloadBehavior: {e}", "WARNING")
+            if not silent:
+                self.log(f"⚠️ CDP setDownloadBehavior: {e}", "WARNING")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  EMAIL (4 layers)
@@ -728,7 +729,7 @@ class A1DProcessor(QThread):
             self.log(f"⚠️ _start_upscale JS: {e}", "WARNING")
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  WAIT & DOWNLOAD  ─  3-layer strategy
+    #  WAIT & DOWNLOAD
     # ══════════════════════════════════════════════════════════════════════════
     def _wait_and_download(self, out_dir: str) -> str:
         timeout  = self.config.get("processing_hang_timeout", 1800)
@@ -747,20 +748,17 @@ class A1DProcessor(QThread):
                     self.log("Video siap di-download!", "SUCCESS")
                     self.prog(92, "Mendownload video...")
 
-                    # ─ FIX 1: Re-apply CDP sebelum setiap download ────────────────
-                    # CDP bisa reset setelah navigasi halaman, harus di-apply ulang.
-                    self._apply_download_cdp(out_dir)
+                    # Re-apply CDP tanpa log (silent=True) — tidak spam
+                    self._apply_download_cdp(out_dir, silent=True)
 
-                    # ─ FIX 2: Cari href di elemen itu sendiri DAN parent-nya ─────
-                    # a1d.ai kadang wrap <button> di dalam <a>, sehingga
-                    # href tidak ada di button tapi ada di parent <a>.
+                    # Cari href di elemen DAN parent (sampai 6 level)
                     href = None
                     try:
                         href = self.driver.execute_script("""
                             let el = arguments[0];
                             for (let i = 0; i < 6; i++) {
                                 const h = el.getAttribute('href') || el.href || '';
-                                if (h && (h.startsWith('http') || h.startsWith('blob'))) return h;
+                                if (h && h.startsWith('http')) return h;
                                 if (!el.parentElement) break;
                                 el = el.parentElement;
                             }
@@ -769,22 +767,17 @@ class A1DProcessor(QThread):
                     except Exception:
                         href = None
 
-                    tag = dl_btns[0].tag_name
-
-                    # Layer A: ada href langsung → download via requests (paling stabil)
+                    # Layer A: href http → download via requests (paling stabil)
                     if href and href.startswith("http"):
                         self.log(f"🔗 Download via URL: {href[:60]}...", "INFO")
                         return self._download_url(href, out_dir)
 
-                    # Layer B: blob URL → perlu Chrome download
-                    # Layer C: button click → Chrome download
-                    before_mp4 = set(
-                        f for f in os.listdir(out_dir) if f.endswith(".mp4")
-                    )
+                    # Layer B/C: blob/button → Chrome download
+                    before_files = set(os.listdir(out_dir))
                     dl_btns[0].click()
                     self.log("⏳ Tunggu Chrome download selesai...", "INFO")
                     out_path = self._wait_for_chrome_download(
-                        out_dir, before_mp4, timeout=300
+                        out_dir, before_files, timeout=600
                     )
                     self.prog(100, "Selesai!")
                     return out_path
@@ -802,92 +795,164 @@ class A1DProcessor(QThread):
         raise TimeoutError(f"Timeout setelah {timeout//60} menit")
 
     def _wait_for_chrome_download(self, out_dir: str,
-                                   before_mp4: set,
-                                   timeout: int = 300) -> str:
-        start = time.time()
+                                   before_files: set,
+                                   timeout: int = 600) -> str:
+        """
+        Tunggu Chrome selesai download.
 
-        # ─ FIX 3: Fallback cek folder Downloads default OS ──────────────────
-        # Jika CDP tidak berhasil arahkan Chrome ke out_dir,
-        # file mungkin masuk ke Downloads default. Kita deteksi & pindahkan.
-        default_dl = os.path.join(os.path.expanduser("~"), "Downloads")
-        check_dirs = [out_dir]
-        if os.path.isdir(default_dl) and \
-                os.path.abspath(default_dl) != os.path.abspath(out_dir):
-            check_dirs.append(default_dl)
-            self.log(f"🔍 Juga monitor: {default_dl}", "INFO")
+        Strategi:
+          1. Cek out_dir untuk file baru (bukan .crdownload/.tmp)
+          2. Fallback: monitor ~/Downloads untuk file baru (termasuk GUID.tmp)
+             - Tracking snapshot sebelum download dimulai
+             - Saat .tmp/.crdownload hilang AND ada file baru > 500KB → pindah ke out_dir
+             - Rename ke nama yang benar (<video>_upscaled_<quality>.mp4)
+          3. Log progress setiap 8 detik (tidak spam setiap loop)
+        """
+        start       = time.time()
+        default_dl  = os.path.join(os.path.expanduser("~"), "Downloads")
+        use_dl_fb   = (os.path.isdir(default_dl) and
+                       os.path.abspath(default_dl) != os.path.abspath(out_dir))
+
+        # Snapshot isi Downloads SEBELUM klik download
+        # (file baru = yang muncul SETELAH snapshot ini)
+        dl_snapshot = set(os.listdir(default_dl)) if use_dl_fb else set()
+        if use_dl_fb:
+            self.log(f"🔍 Fallback monitor: {default_dl}", "INFO")
+
+        last_log = start  # throttle log agar tidak spam
 
         while time.time() - start < timeout:
             if self._cancelled: raise InterruptedError("Dibatalkan")
 
-            # Cek file sedang didownload di semua direktori
-            in_progress = []
-            for d in check_dirs:
-                try:
-                    in_progress += [
-                        f for f in os.listdir(d)
-                        if f.endswith(".crdownload") or f.endswith(".tmp")
-                    ]
-                except Exception:
-                    pass
-            if in_progress:
-                self.log(f"📥 Downloading... {in_progress[0]}", "INFO")
-                time.sleep(2); continue
+            # ────────────────────────────────────────────────
+            # Cek PRIMARY: file baru di out_dir (bukan in-progress)
+            # ────────────────────────────────────────────────
+            try:
+                current_out = set(os.listdir(out_dir))
+                new_out = [
+                    os.path.join(out_dir, f)
+                    for f in (current_out - before_files)
+                    if not f.endswith(".crdownload") and not f.endswith(".tmp")
+                ]
+                if new_out:
+                    best = max(new_out, key=os.path.getmtime)
+                    if os.path.getsize(best) > 500_000:  # > 500 KB
+                        self.log(f"✅ Download selesai: {os.path.basename(best)}", "SUCCESS")
+                        return best
+            except Exception:
+                pass
 
-            # Cek MP4 baru di out_dir (tujuan utama)
-            new_mp4s = sorted(
-                [os.path.join(out_dir, f) for f in os.listdir(out_dir)
-                 if f.endswith(".mp4") and f not in before_mp4],
-                key=os.path.getmtime, reverse=True
-            )
-            if new_mp4s:
-                self.log(f"✅ Download selesai: {os.path.basename(new_mp4s[0])}", "SUCCESS")
-                return new_mp4s[0]
-
-            # Fallback: file terdownload di folder Downloads default OS
-            if os.path.isdir(default_dl) and \
-                    os.path.abspath(default_dl) != os.path.abspath(out_dir):
+            # ────────────────────────────────────────────────
+            # Cek FALLBACK: monitor folder Downloads default OS
+            # Menangani kasus CDP tidak redirect + file GUID.tmp
+            # ────────────────────────────────────────────────
+            if use_dl_fb:
                 try:
-                    dl_mp4s = sorted(
-                        [
-                            os.path.join(default_dl, f)
-                            for f in os.listdir(default_dl)
-                            if f.endswith(".mp4")
-                            and os.path.getmtime(
-                                os.path.join(default_dl, f)
-                            ) > start - 30  # file dibuat dalam 30 detik terakhir
-                        ],
-                        key=os.path.getmtime, reverse=True
-                    )
-                    if dl_mp4s:
-                        # Tunggu sebentar pastikan selesai
+                    current_dl  = set(os.listdir(default_dl))
+                    new_in_dl   = current_dl - dl_snapshot  # hanya file yang benar-benar baru
+
+                    # Ada file sedang didownload (in-progress)?
+                    in_prog = [f for f in new_in_dl
+                               if f.endswith(".crdownload") or f.endswith(".tmp")]
+
+                    if in_prog:
+                        # Log throttled setiap 8 detik supaya tidak spam
+                        now = time.time()
+                        if now - last_log >= 8:
+                            try:
+                                sz = os.path.getsize(
+                                    os.path.join(default_dl, in_prog[0]))
+                                self.log(
+                                    f"📥 Mendownload... "
+                                    f"{sz / 1048576:.1f} MB "
+                                    f"({int(now - start)}s)",
+                                    "INFO"
+                                )
+                            except Exception:
+                                self.log(
+                                    f"📥 Mendownload... ({int(now - start)}s)",
+                                    "INFO"
+                                )
+                            last_log = now
                         time.sleep(2)
-                        # Pastikan tidak ada .crdownload dengan nama sama
-                        still_dl = any(
-                            os.path.exists(p.replace(".mp4", ".crdownload")) or
-                            os.path.exists(p + ".crdownload")
-                            for p in dl_mp4s
+                        continue  # Tunggu selesai
+
+                    # Tidak ada in-progress: cari file baru yang sudah selesai
+                    # Cek ANY file baru (bukan hanya .mp4) —
+                    # karena blob download bisa berakhir sebagai GUID.tmp atau GUID.mp4
+                    completed = [
+                        f for f in new_in_dl
+                        if not f.endswith(".crdownload") and not f.endswith(".tmp")
+                    ]
+                    # Juga cek .tmp yang sudah selesai (ukurannya stabil dan besar)
+                    # Ini untuk kasus Chrome tidak rename .tmp -> .mp4
+                    finished_tmps = []
+                    for f in new_in_dl:
+                        if not f.endswith(".tmp"): continue
+                        fp = os.path.join(default_dl, f)
+                        try:
+                            sz1 = os.path.getsize(fp)
+                            time.sleep(1.5)
+                            sz2 = os.path.getsize(fp)
+                            # Ukuran tidak berubah (bukan sedang download) AND > 500KB
+                            if sz1 == sz2 and sz1 > 500_000:
+                                finished_tmps.append(f)
+                        except Exception:
+                            pass
+
+                    candidates = sorted(
+                        completed + finished_tmps,
+                        key=lambda f: os.path.getmtime(
+                            os.path.join(default_dl, f)),
+                        reverse=True
+                    )
+
+                    for fname in candidates:
+                        fpath = os.path.join(default_dl, fname)
+                        try:
+                            fsize = os.path.getsize(fpath)
+                        except Exception:
+                            continue
+                        if fsize < 500_000:  # Skip file < 500KB
+                            continue
+
+                        # Tentukan nama output yang benar
+                        base    = os.path.splitext(
+                            os.path.basename(self.video_path))[0]
+                        quality = self.config.get("output_quality", "4k")
+                        dest    = os.path.join(
+                            out_dir, f"{base}_upscaled_{quality}.mp4")
+                        cnt = 1
+                        while os.path.exists(dest):
+                            dest = os.path.join(
+                                out_dir,
+                                f"{base}_upscaled_{quality}_{cnt}.mp4")
+                            cnt += 1
+
+                        shutil.move(fpath, dest)
+                        self.log(
+                            f"📦 Dipindah dari Downloads → "
+                            f"{os.path.basename(dest)} "
+                            f"({fsize // 1048576} MB)",
+                            "SUCCESS"
                         )
-                        if not still_dl:
-                            src  = dl_mp4s[0]
-                            dest = os.path.join(out_dir, os.path.basename(src))
-                            shutil.move(src, dest)
-                            self.log(
-                                f"📦 File dipindah dari Downloads → {os.path.basename(dest)}",
-                                "SUCCESS"
-                            )
-                            return dest
+                        return dest
+
                 except Exception as e:
-                    self.log(f"⚠️ Fallback Downloads: {e}", "INFO")
+                    self.log(f"⚠️ Monitor Downloads: {e}", "INFO")
 
             time.sleep(1.5)
 
-        # Last resort: ambil MP4 terbaru di out_dir
-        all_mp4s = sorted(
-            [os.path.join(out_dir, f) for f in os.listdir(out_dir)
-             if f.endswith(".mp4")],
-            key=os.path.getmtime, reverse=True
-        )
-        if all_mp4s: return all_mp4s[0]
+        # Last resort: MP4 terbaru di out_dir
+        try:
+            all_out = sorted(
+                [os.path.join(out_dir, f) for f in os.listdir(out_dir)
+                 if f.endswith(".mp4")],
+                key=os.path.getmtime, reverse=True
+            )
+            if all_out: return all_out[0]
+        except Exception:
+            pass
         raise TimeoutError("❌ Download Chrome tidak selesai")
 
     def _download_url(self, url: str, out_dir: str) -> str:
