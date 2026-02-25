@@ -1,5 +1,14 @@
-import os
 import sys
+import os
+
+# ══ FIX: pastikan project root selalu ada di sys.path ════════════════════════════
+# Diperlukan saat dijalankan via Launcher.bat / Python portable
+# yang working directory-nya bisa berbeda dengan lokasi main.py
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+# ────────────────────────────────────────────────────────────────────────────────
+
 import json
 import datetime
 from pathlib import Path
@@ -20,7 +29,7 @@ import qtawesome as qta
 from App.background_process import A1DProcessor
 from App.batch_processor import BatchProcessor, MAX_PARALLEL_LIMIT, DEFAULT_WORKERS
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
 APP_NAME    = "A1D Video Upscaler v2"
 APP_VER     = "2.0.0"
 
@@ -164,14 +173,6 @@ LOG_COLORS = {
 
 
 # ══ HELPERS ════════════════════════════════════════════════════════════════════
-def _sec_label(sec: int) -> str:
-    h, rem = divmod(sec, 3600)
-    m, s   = divmod(rem, 60)
-    if h:   return f"{h}j {m}m"
-    if m:   return f"{m}m {s}s"
-    return  f"{s}s"
-
-
 def _field(label: str, widget, tooltip: str = "") -> QVBoxLayout:
     lay = QVBoxLayout()
     lay.setSpacing(4)
@@ -233,11 +234,9 @@ class LogViewer(QTextEdit):
     def __init__(self, max_lines: int = 500, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self._max_lines = max_lines
         self.document().setMaximumBlockCount(max_lines)
 
     def set_max_lines(self, n: int):
-        self._max_lines = n
         self.document().setMaximumBlockCount(n)
 
     def append_log(self, msg: str, level: str = "INFO"):
@@ -251,23 +250,19 @@ class LogViewer(QTextEdit):
         self.moveCursor(QTextCursor.End)
 
 
-# ══ SECTION HEADER helper ════════════════════════════════════════════════════════
+# ══ SECTION HEADER ═══════════════════════════════════════════════════════════
 def _sec_header(text: str, icon: str = "") -> QWidget:
     w   = QWidget()
     lay = QHBoxLayout(w)
-    lay.setContentsMargins(0, 8, 0, 4)
-    lay.setSpacing(6)
+    lay.setContentsMargins(0, 8, 0, 4); lay.setSpacing(6)
     if icon:
         ico = QLabel()
         ico.setPixmap(qta.icon(icon, color=C['accent']).pixmap(14, 14))
         lay.addWidget(ico)
-    lbl = QLabel(text.upper())
-    lbl.setObjectName("SectionLabel")
-    div = QFrame()
-    div.setFrameShape(QFrame.HLine)
+    lbl = QLabel(text.upper()); lbl.setObjectName("SectionLabel")
+    div = QFrame(); div.setFrameShape(QFrame.HLine)
     div.setStyleSheet(f"color:{C['border']};")
-    lay.addWidget(lbl)
-    lay.addWidget(div, stretch=1)
+    lay.addWidget(lbl); lay.addWidget(div, stretch=1)
     return w
 
 
@@ -279,7 +274,6 @@ class MainWindow(QMainWindow):
         self.processor   = None
         self._video_paths: list[str] = []
         self._running    = False
-
         self.setWindowTitle(f"{APP_NAME}  v{APP_VER}")
         self.setMinimumSize(960, 700)
         self.resize(1080, 800)
@@ -310,7 +304,6 @@ class MainWindow(QMainWindow):
         return default
 
     def _save_config(self):
-        """Baca semua widget lalu tulis ke config.json."""
         self.config.update({
             "relay_api_key":          self.api_key_edit.text().strip(),
             "output_quality":          self.quality_combo.currentText().lower(),
@@ -340,7 +333,7 @@ class MainWindow(QMainWindow):
         main_lay.setContentsMargins(20, 16, 20, 16)
         main_lay.setSpacing(12)
 
-        # ─ HEADER ──────────────────────────────────────────────────────────────
+        # Header
         hdr = QHBoxLayout(); hdr.setSpacing(10)
         ico_lbl = QLabel()
         ico_lbl.setPixmap(qta.icon("fa5s.film", color=C['accent']).pixmap(30, 30))
@@ -350,63 +343,51 @@ class MainWindow(QMainWindow):
         pw_lbl.setStyleSheet(
             f"background:{C['success']}22;border:1px solid {C['success']}55;"
             f"border-radius:4px;padding:2px 8px;color:{C['success']};"
-            f"font-size:11px;font-weight:600;"
-        )
+            f"font-size:11px;font-weight:600;")
         sub_lbl = QLabel("Auto Video Upscaler via a1d.ai")
         sub_lbl.setObjectName("Subtitle")
         for w in [ico_lbl, title_lbl, ver_lbl, pw_lbl]: hdr.addWidget(w)
-        hdr.addStretch()
-        hdr.addWidget(sub_lbl)
+        hdr.addStretch(); hdr.addWidget(sub_lbl)
         main_lay.addLayout(hdr)
-
         div = QFrame(); div.setObjectName("Divider"); main_lay.addWidget(div)
 
-        # ─ SPLITTER: top(cols) / log ────────────────────────────────────────────
+        # Splitter
         splitter = QSplitter(Qt.Vertical)
         splitter.setStyleSheet("QSplitter::handle{background:transparent;height:8px;}")
         main_lay.addWidget(splitter, stretch=1)
-
         top_w = QWidget()
         top_l = QHBoxLayout(top_w)
-        top_l.setContentsMargins(0, 0, 0, 0)
-        top_l.setSpacing(14)
+        top_l.setContentsMargins(0, 0, 0, 0); top_l.setSpacing(14)
         splitter.addWidget(top_w)
 
-        # ── LEFT: Input + Progress ────────────────────────────────────────────
+        # LEFT column
         left = QVBoxLayout(); left.setSpacing(12)
         top_l.addLayout(left, stretch=3)
 
-        # Input card
         in_card = QFrame(); in_card.setObjectName("Card")
         in_lay  = QVBoxLayout(in_card)
-        in_lay.setContentsMargins(14, 12, 14, 12); in_lay.setSpacing(8)
+        in_lay.setContentsMargins(14,12,14,12); in_lay.setSpacing(8)
         in_lay.addWidget(_sec_header("Input Files", "fa5s.file-video"))
-
         self.drop_zone = DropZone()
         self.drop_zone.files_dropped.connect(self._on_drop)
         in_lay.addWidget(self.drop_zone)
-
-        self.file_list = QListWidget()
-        self.file_list.setMaximumHeight(120)
+        self.file_list = QListWidget(); self.file_list.setMaximumHeight(120)
         in_lay.addWidget(self.file_list)
-
         fc = QHBoxLayout(); fc.setSpacing(8)
-        self.add_btn = QPushButton(qta.icon("fa5s.plus", color=C['accent']), "  Tambah")
+        self.add_btn   = QPushButton(qta.icon("fa5s.plus", color=C['accent']), "  Tambah")
         self.add_btn.clicked.connect(self._browse_files)
         self.clear_btn = QPushButton(qta.icon("fa5s.trash-alt", color=C['error']), "  Clear")
         self.clear_btn.clicked.connect(self._clear_files)
         self.file_count_lbl = QLabel("0 file")
         self.file_count_lbl.setStyleSheet(f"color:{C['text_dim']};")
         for w in [self.add_btn, self.clear_btn]: fc.addWidget(w)
-        fc.addStretch()
-        fc.addWidget(self.file_count_lbl)
+        fc.addStretch(); fc.addWidget(self.file_count_lbl)
         in_lay.addLayout(fc)
         left.addWidget(in_card)
 
-        # Progress card
         pr_card = QFrame(); pr_card.setObjectName("Card")
         pr_lay  = QVBoxLayout(pr_card)
-        pr_lay.setContentsMargins(14, 12, 14, 12); pr_lay.setSpacing(8)
+        pr_lay.setContentsMargins(14,12,14,12); pr_lay.setSpacing(8)
         ph = QHBoxLayout()
         ph.addWidget(_sec_header("Progress", "fa5s.tasks"))
         self.status_lbl = QLabel("Idle")
@@ -414,8 +395,7 @@ class MainWindow(QMainWindow):
         ph.addStretch(); ph.addWidget(self.status_lbl)
         pr_lay.addLayout(ph)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setRange(0, 100); self.progress_bar.setFormat("%p%")
         pr_lay.addWidget(self.progress_bar)
         self.prog_label = QLabel("Menunggu...")
         self.prog_label.setStyleSheet(f"color:{C['text_dim']};font-size:12px;")
@@ -423,34 +403,30 @@ class MainWindow(QMainWindow):
         left.addWidget(pr_card)
         left.addStretch()
 
-        # ── RIGHT: Settings (scrollable) ─────────────────────────────────────────
-        set_card = QFrame(); set_card.setObjectName("Card")
+        # RIGHT column: Settings scrollable
+        set_card  = QFrame(); set_card.setObjectName("Card")
         set_outer = QVBoxLayout(set_card)
-        set_outer.setContentsMargins(14, 12, 14, 12); set_outer.setSpacing(6)
+        set_outer.setContentsMargins(14,12,14,12); set_outer.setSpacing(6)
         set_outer.addWidget(_sec_header("Settings", "fa5s.sliders-h"))
         top_l.addWidget(set_card, stretch=2)
 
-        # Scroll area untuk settings
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         set_outer.addWidget(scroll, stretch=1)
-
-        sc_w = QWidget()
-        sc_l = QVBoxLayout(sc_w)
-        sc_l.setContentsMargins(2, 0, 8, 4)
-        sc_l.setSpacing(2)
+        sc_w = QWidget(); sc_l = QVBoxLayout(sc_w)
+        sc_l.setContentsMargins(2,0,8,4); sc_l.setSpacing(2)
         scroll.setWidget(sc_w)
 
-        # ─ AUTHENTICATION ─────────────────────────────────────────────
+        # ─ Authentication
         sc_l.addWidget(_sec_header("Authentication", "fa5s.key"))
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setPlaceholderText("fxa_...")
         self.api_key_edit.setEchoMode(QLineEdit.Password)
         self.api_key_edit.setText(self.config.get("relay_api_key", ""))
         show_btn = QPushButton(qta.icon("fa5s.eye", color=C['text_dim']), "")
-        show_btn.setObjectName("IconBtn"); show_btn.setFixedSize(32, 32)
+        show_btn.setObjectName("IconBtn"); show_btn.setFixedSize(32,32)
         show_btn.setCheckable(True)
         show_btn.toggled.connect(
             lambda c: self.api_key_edit.setEchoMode(
@@ -459,117 +435,93 @@ class MainWindow(QMainWindow):
         api_row.addWidget(self.api_key_edit); api_row.addWidget(show_btn)
         sc_l.addWidget(QLabel("Firefox Relay API Key")); sc_l.addLayout(api_row)
 
-        # ─ OUTPUT ────────────────────────────────────────────────────
+        # ─ Output
         sc_l.addWidget(_sec_header("Output", "fa5s.folder-open"))
         self.quality_combo = QComboBox()
         self.quality_combo.addItems(["4k", "2k", "1080p"])
         self.quality_combo.setCurrentText(self.config.get("output_quality", "4k"))
         sc_l.addLayout(_field("Kualitas Output", self.quality_combo,
                                "Resolusi output: 4K / 2K / 1080p"))
-
         self.out_dir_edit = QLineEdit()
         self.out_dir_edit.setPlaceholderText("Kosong = folder video/OUTPUT")
         self.out_dir_edit.setText(self.config.get("output_dir", ""))
         browse_out = QPushButton(qta.icon("fa5s.folder-open", color=C['text_dim']), "")
-        browse_out.setObjectName("IconBtn"); browse_out.setFixedSize(32, 32)
+        browse_out.setObjectName("IconBtn"); browse_out.setFixedSize(32,32)
         browse_out.clicked.connect(self._browse_output)
         out_row = QHBoxLayout(); out_row.setSpacing(4)
         out_row.addWidget(self.out_dir_edit); out_row.addWidget(browse_out)
         sc_l.addWidget(QLabel("Folder Output")); sc_l.addLayout(out_row)
 
-        # ─ TIMING ─────────────────────────────────────────────────────
+        # ─ Timing
         sc_l.addWidget(_sec_header("Timing", "fa5s.clock"))
-
         self.init_wait_spin = QSpinBox()
-        self.init_wait_spin.setRange(0, 600)
-        self.init_wait_spin.setSingleStep(10)
+        self.init_wait_spin.setRange(0, 600); self.init_wait_spin.setSingleStep(10)
         self.init_wait_spin.setSuffix(" detik")
         self.init_wait_spin.setValue(self.config.get("initial_download_wait", 120))
-        sc_l.addLayout(_field(
-            "Wait Setelah Upscale Start", self.init_wait_spin,
-            "Jeda sebelum mulai polling tombol Download (detik, 0 = langsung)"
-        ))
-
+        sc_l.addLayout(_field("Wait Setelah Upscale Start", self.init_wait_spin,
+                               "Jeda sebelum mulai polling tombol Download"))
         self.render_timeout_spin = QSpinBox()
-        self.render_timeout_spin.setRange(300, 7200)
-        self.render_timeout_spin.setSingleStep(60)
+        self.render_timeout_spin.setRange(300, 7200); self.render_timeout_spin.setSingleStep(60)
         self.render_timeout_spin.setSuffix(" detik")
         self.render_timeout_spin.setValue(self.config.get("processing_hang_timeout", 1800))
-        sc_l.addLayout(_field(
-            "Timeout Render", self.render_timeout_spin,
-            "Timeout maksimal menunggu video selesai di-render server"
-        ))
-
+        sc_l.addLayout(_field("Timeout Render", self.render_timeout_spin,
+                               "Timeout maks menunggu server selesai render"))
         self.dl_timeout_spin = QSpinBox()
-        self.dl_timeout_spin.setRange(60, 3600)
-        self.dl_timeout_spin.setSingleStep(30)
+        self.dl_timeout_spin.setRange(60, 3600); self.dl_timeout_spin.setSingleStep(30)
         self.dl_timeout_spin.setSuffix(" detik")
         self.dl_timeout_spin.setValue(self.config.get("download_timeout", 600))
-        sc_l.addLayout(_field(
-            "Timeout Download", self.dl_timeout_spin,
-            "Timeout maksimal menunggu file selesai didownload"
-        ))
+        sc_l.addLayout(_field("Timeout Download", self.dl_timeout_spin,
+                               "Timeout maks menunggu file selesai didownload"))
 
-        # ─ BATCH ──────────────────────────────────────────────────────
+        # ─ Batch
         sc_l.addWidget(_sec_header("Batch", "fa5s.layer-group"))
         row2 = QHBoxLayout(); row2.setSpacing(10)
-
         self.workers_spin = QSpinBox()
         self.workers_spin.setRange(1, MAX_PARALLEL_LIMIT)
         self.workers_spin.setValue(self.config.get("max_workers", DEFAULT_WORKERS))
         self.workers_spin.valueChanged.connect(self._update_queue_info)
-        w_l = QVBoxLayout(); w_l.setSpacing(4)
-        w_l.addLayout(_field(f"Workers (1–{MAX_PARALLEL_LIMIT})", self.workers_spin,
-                              "Jumlah video diproses paralel"))
-
         self.stagger_spin = QSpinBox()
-        self.stagger_spin.setRange(0, 120)
-        self.stagger_spin.setSuffix(" detik")
+        self.stagger_spin.setRange(0, 120); self.stagger_spin.setSuffix(" detik")
         self.stagger_spin.setValue(self.config.get("batch_stagger_delay", 15))
-        s_l = QVBoxLayout(); s_l.setSpacing(4)
-        s_l.addLayout(_field("Stagger Delay", self.stagger_spin,
-                              "Jeda antar worker start (0 = serentak)"))
-
-        row2.addLayout(w_l); row2.addLayout(s_l)
+        wl = QVBoxLayout(); wl.addLayout(
+            _field(f"Workers (1–{MAX_PARALLEL_LIMIT})", self.workers_spin,
+                   "Jumlah video paralel"))
+        sl = QVBoxLayout(); sl.addLayout(
+            _field("Stagger Delay", self.stagger_spin, "Jeda antar worker start"))
+        row2.addLayout(wl); row2.addLayout(sl)
         sc_l.addLayout(row2)
 
-        # ─ BROWSER ─────────────────────────────────────────────────────
+        # ─ Browser
         sc_l.addWidget(_sec_header("Browser", "fa5s.globe"))
         self.headless_chk = QCheckBox("Headless mode")
         self.headless_chk.setChecked(self.config.get("headless", True))
-        self.headless_chk.setToolTip("Browser berjalan tanpa tampilan (lebih hemat resource)")
+        self.headless_chk.setToolTip("Browser tanpa tampilan (lebih hemat resource)")
         sc_l.addWidget(self.headless_chk)
 
-        # ─ ADVANCED ────────────────────────────────────────────────────
+        # ─ Advanced
         sc_l.addWidget(_sec_header("Advanced", "fa5s.cog"))
         self.a1d_url_edit = QLineEdit()
         self.a1d_url_edit.setPlaceholderText("https://a1d.ai")
         self.a1d_url_edit.setText(self.config.get("a1d_url", "https://a1d.ai"))
         sc_l.addLayout(_field("a1d.ai URL", self.a1d_url_edit,
-                               "URL base a1d.ai (ubah jika domain berubah)"))
-
+                               "URL base a1d.ai (ubah jika domain pindah)"))
         self.log_lines_spin = QSpinBox()
-        self.log_lines_spin.setRange(100, 5000)
-        self.log_lines_spin.setSingleStep(100)
+        self.log_lines_spin.setRange(100, 5000); self.log_lines_spin.setSingleStep(100)
         self.log_lines_spin.setValue(self.config.get("log_max_lines", 500))
         sc_l.addLayout(_field("Maks Baris Log", self.log_lines_spin,
-                               "Jumlah maksimum baris yang ditampilkan di log"))
-
+                               "Jumlah maks baris log yang ditampilkan"))
         sc_l.addStretch()
 
-        # Save button
         save_btn = QPushButton(qta.icon("fa5s.save", color=C['success']), "  Simpan Semua Setting")
         save_btn.clicked.connect(self._save_config)
-        save_btn.setToolTip("Simpan semua perubahan ke config.json")
         set_outer.addWidget(save_btn)
 
-        # ─ LOG ──────────────────────────────────────────────────────────────
+        # LOG
         log_card = QFrame(); log_card.setObjectName("Card")
         log_lay  = QVBoxLayout(log_card)
-        log_lay.setContentsMargins(14, 12, 14, 12); log_lay.setSpacing(8)
+        log_lay.setContentsMargins(14,12,14,12); log_lay.setSpacing(8)
         splitter.addWidget(log_card)
         splitter.setSizes([460, 220])
-
         lh = QHBoxLayout()
         lh.addWidget(_sec_header("Realtime Log", "fa5s.terminal"))
         clr_btn = QPushButton(qta.icon("fa5s.eraser", color=C['text_dim']), "  Clear Log")
@@ -577,22 +529,19 @@ class MainWindow(QMainWindow):
         clr_btn.clicked.connect(lambda: self.log.clear())
         lh.addStretch(); lh.addWidget(clr_btn)
         log_lay.addLayout(lh)
-
         self.log = LogViewer(max_lines=self.config.get("log_max_lines", 500))
         log_lay.addWidget(self.log)
 
-        # ─ ACTION BAR ──────────────────────────────────────────────────────────
+        # Action bar
         div2 = QFrame(); div2.setObjectName("Divider"); main_lay.addWidget(div2)
         ab = QHBoxLayout(); ab.setSpacing(12)
         self.queue_info = QLabel("Siap memproses")
         self.queue_info.setStyleSheet(f"color:{C['text_dim']};")
-        self.start_btn = QPushButton(
-            qta.icon("fa5s.play", color="white"), "  MULAI PROSES")
+        self.start_btn = QPushButton(qta.icon("fa5s.play", color="white"), "  MULAI PROSES")
         self.start_btn.setObjectName("PrimaryBtn")
         self.start_btn.setMinimumWidth(180); self.start_btn.setFixedHeight(44)
         self.start_btn.clicked.connect(self._start)
-        self.cancel_btn = QPushButton(
-            qta.icon("fa5s.stop", color=C['error']), "  CANCEL")
+        self.cancel_btn = QPushButton(qta.icon("fa5s.stop", color=C['error']), "  CANCEL")
         self.cancel_btn.setObjectName("DangerBtn")
         self.cancel_btn.setFixedHeight(44); self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel)
@@ -601,7 +550,10 @@ class MainWindow(QMainWindow):
         main_lay.addLayout(ab)
 
         self.log.append_log(f"🎥 {APP_NAME} v{APP_VER} siap", "SUCCESS")
-        self.log.append_log("Semua setting bisa diubah dari panel Settings — tidak perlu edit file", "INFO")
+        self.log.append_log(
+            f"Project root: {_PROJECT_ROOT}", "DEBUG")
+        self.log.append_log(
+            "Semua setting bisa diubah dari panel Settings", "INFO")
 
     # ── FILE MANAGEMENT ───────────────────────────────────────────────────────────
     def _on_drop(self, paths):
@@ -657,9 +609,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.log.append_log(f"🚀 Memulai proses {n} video...", "INFO")
         self.processor = (
-            A1DProcessor(os.path.dirname(__file__), self._video_paths[0], cfg)
+            A1DProcessor(_PROJECT_ROOT, self._video_paths[0], cfg)
             if n == 1 else
-            BatchProcessor(os.path.dirname(__file__), self._video_paths, cfg)
+            BatchProcessor(_PROJECT_ROOT, self._video_paths, cfg)
         )
         self.processor.log_signal.connect(self.log.append_log)
         self.processor.progress_signal.connect(self._on_progress)
@@ -698,9 +650,9 @@ class MainWindow(QMainWindow):
             f"color:{C['success']};" if ok else f"color:{C['error']};")
         self.prog_label.setText(msg)
 
-    def dragEnterEvent(self, e: QDragEnterEvent):
+    def dragEnterEvent(self, e):
         if e.mimeData().hasUrls(): e.acceptProposedAction()
-    def dropEvent(self, e: QDropEvent):
+    def dropEvent(self, e):
         paths = [u.toLocalFile() for u in e.mimeData().urls()
                  if u.toLocalFile().lower().endswith(
                      ('.mp4','.mkv','.mov','.avi','.webm','.flv','.wmv'))]
