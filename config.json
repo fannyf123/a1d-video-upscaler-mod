@@ -1,0 +1,12 @@
+{
+  "app_version": "2.0.0",
+  "output_quality": "4k",
+  "headless": true,
+  "processing_hang_timeout": 1800,
+  "download_timeout": 600,
+  "relay_api_key": "",
+  "a1d_url": "https://a1d.ai",
+  "log_max_lines": 500,
+  "batch_size": 1,
+  "chromedriver_size_mb": 171
+}
