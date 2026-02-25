@@ -45,6 +45,24 @@ class A1DProcessor(QThread):
     SIGNIN_URL = "https://a1d.ai/auth/sign-in"
     EDITOR_URL = "https://a1d.ai/video-upscaler/editor"
 
+    # Kandidat path Brave per OS
+    BRAVE_PATHS = {
+        "win32": [
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+        ],
+        "darwin": [
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        ],
+        "linux": [
+            "/usr/bin/brave-browser",
+            "/usr/bin/brave",
+            "/snap/bin/brave",
+            "/usr/local/bin/brave-browser",
+            "/opt/brave.com/brave/brave-browser",
+        ],
+    }
+
     QUALITY_SELECTORS = {
         "1080p": [
             '[data-value="1080p"]', '[data-value="1080"]',
@@ -83,6 +101,55 @@ class A1DProcessor(QThread):
     def log(self, msg, level="INFO"): self.log_signal.emit(msg, level)
     def prog(self, pct, msg=""):      self.progress_signal.emit(pct, msg)
 
+    # ══ BRAVE BINARY DETECTION ════════════════════════════════════════════════════
+    def _get_brave_binary(self) -> str:
+        """
+        Deteksi path executable Brave browser secara otomatis.
+
+        Urutan prioritas:
+          1. config['brave_path']           — override manual dari UI
+          2. Env var BRAVE_PATH             — override via environment
+          3. Kandidat path default per OS   — auto-detect
+
+        Raises RuntimeError jika Brave tidak ditemukan.
+        """
+        # 1. Config override
+        cfg = self.config.get("brave_path", "").strip()
+        if cfg and os.path.isfile(cfg):
+            return cfg
+        if cfg:
+            self.log(f"⚠️ brave_path di config tidak ditemukan: {cfg}", "WARNING")
+
+        # 2. Env var override
+        env = os.environ.get("BRAVE_PATH", "").strip()
+        if env and os.path.isfile(env):
+            return env
+
+        # 3. Auto-detect per OS
+        candidates = list(self.BRAVE_PATHS.get(sys.platform, self.BRAVE_PATHS["linux"]))
+
+        # Windows: tambahkan path dari LOCALAPPDATA (untuk user-install)
+        if sys.platform == "win32":
+            local = os.environ.get("LOCALAPPDATA", "")
+            if local:
+                candidates.append(
+                    os.path.join(local, r"BraveSoftware\Brave-Browser\Application\brave.exe")
+                )
+
+        for path in candidates:
+            if path and os.path.isfile(path):
+                return path
+
+        # Tidak ditemukan — bantu user dengan pesan yang jelas
+        paths_str = "\n  - ".join(candidates)
+        raise RuntimeError(
+            f"❌ Brave browser tidak ditemukan!\n"
+            f"Sudah dicek di:\n  - {paths_str}\n\n"
+            f"Solusi:\n"
+            f"  1. Install Brave dari https://brave.com\n"
+            f"  2. Atau set 'brave_path' di config dengan path lengkap ke brave.exe"
+        )
+
     # ══ MAIN RUN ═══════════════════════════════════════════════════════
     def run(self):
         try:
@@ -119,7 +186,14 @@ class A1DProcessor(QThread):
         drv_name = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
         drv_path = os.path.join(self.base_dir, "driver", drv_name)
 
+        # ─ Deteksi Brave binary ────────────────────────────────────────────────
+        brave_bin = self._get_brave_binary()
+        self.log(f"🦁 Brave: {brave_bin}", "INFO")
+
         opts = Options()
+        # Arahkan Selenium ke Brave (bukan Chrome)
+        opts.binary_location = brave_bin
+
         if self.config.get("headless", True):
             opts.add_argument("--headless=new")
         opts.add_argument("--no-sandbox")
@@ -128,6 +202,8 @@ class A1DProcessor(QThread):
         opts.add_argument("--window-size=1920,1080")
         opts.add_argument("--mute-audio")
         opts.add_argument("--disable-blink-features=AutomationControlled")
+        # Sembunyikan tanda "Brave is being controlled by automated software"
+        opts.add_argument("--disable-brave-update")
         opts.add_argument(
             "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -143,6 +219,8 @@ class A1DProcessor(QThread):
             "safebrowsing.disable_download_protection":  True,
             "profile.default_content_setting_values.automatic_downloads": 1,
             "profile.content_settings.exceptions.automatic_downloads.*.setting": 1,
+            # Matikan Brave Rewards / Shields notification saat headless
+            "brave.shields.stats_badge_visible":         False,
         })
 
         self.driver = webdriver.Chrome(service=Service(drv_path), options=opts)
@@ -206,24 +284,17 @@ class A1DProcessor(QThread):
             self._start_upscale()
             self.log("⚙️ Proses upscale dimulai!", "SUCCESS")
 
-            # ───────────────────────────────────────────────────────
-            # Tunggu 2 menit sebelum mulai polling tombol Download.
-            # Server butuh waktu untuk memulai render — jika polling
-            # terlalu cepat, tombol belum muncul atau masih merupakan
-            # tombol proses sebelumnya.
-            # ───────────────────────────────────────────────────────
+            # Tunggu 2 menit sebelum mulai polling tombol Download
             wait_sec = INITIAL_DOWNLOAD_WAIT
             self.log(f"⏳ Tunggu {wait_sec // 60} menit sebelum cek tombol Download...", "INFO")
             for remaining in range(wait_sec, 0, -1):
                 if self._cancelled:
                     raise InterruptedError("Dibatalkan")
-                # Log setiap 30 detik dan 10 detik terakhir
                 if remaining % 30 == 0 or remaining <= 10:
                     self.prog(87, f"⏳ Menunggu server render... {remaining}s")
                     self.log(f"   └ sisa {remaining}s", "INFO")
                 time.sleep(1)
             self.log("✅ Initial wait selesai, mulai cek tombol Download", "INFO")
-            # ───────────────────────────────────────────────────────
 
             self.prog(88, "Menunggu proses selesai (5-30 menit)...")
             out_path = self._wait_and_download(out_dir)
@@ -255,16 +326,14 @@ class A1DProcessor(QThread):
     def _safe_click(self, element, label: str = "") -> bool:
         """
         Klik elemen dengan 3 layer fallback untuk menghindari
-        ElementClickInterceptedException (elemen tertutup overlay/tooltip).
+        ElementClickInterceptedException.
 
         Priority:
-          1. scrollIntoView + JS element.click()  — bypass overlay sepenuhnya
-          2. ActionChains move_to_element + click  — simulasi mouse lebih alami
+          1. scrollIntoView + JS element.click()  — bypass overlay
+          2. ActionChains move_to_element + click
           3. Native .click()                       — last resort
         """
         tag = label or "elemen"
-
-        # Layer 1: JS click — tidak peduli elemen tertutup/intercepted
         try:
             self.driver.execute_script(
                 "arguments[0].scrollIntoView({block:'center',behavior:'instant'});"
@@ -275,23 +344,18 @@ class A1DProcessor(QThread):
             return True
         except Exception as e:
             self.log(f"⚠️ JS click gagal ({tag}): {e}", "INFO")
-
-        # Layer 2: ActionChains
         try:
             ActionChains(self.driver).move_to_element(element).click().perform()
             self.log(f"🔨 ActionChains click: {tag}", "INFO")
             return True
         except Exception as e:
             self.log(f"⚠️ ActionChains gagal ({tag}): {e}", "INFO")
-
-        # Layer 3: Native click
         try:
             element.click()
             self.log(f"🔨 Native click: {tag}", "INFO")
             return True
         except Exception as e:
             self.log(f"❌ Semua click layer gagal ({tag}): {e}", "ERROR")
-
         return False
 
     # ══ EMAIL (4 layers) ═════════════════════════════════════════════════════════
@@ -700,10 +764,6 @@ class A1DProcessor(QThread):
 
     # ══ EXTRACT URL DARI TOMBOL DOWNLOAD ═══════════════════════════════════════
     def _extract_url_from_element(self, element) -> dict | None:
-        """
-        Ekstrak blob/http URL dari elemen tombol Download itu sendiri.
-        Traverse ke parent tree max 8 level.
-        """
         try:
             result = self.driver.execute_script("""
                 let el = arguments[0];
@@ -731,7 +791,6 @@ class A1DProcessor(QThread):
             return None
 
     def _download_blob_url(self, blob_url: str, out_path: str) -> str:
-        """Download blob:// URL via JS fetch + FileReader → base64 → file."""
         self.log("📥 Download blob via JS fetch + FileReader...", "INFO")
         data_url = self.driver.execute_async_script("""
             const blobUrl = arguments[0];
@@ -757,7 +816,6 @@ class A1DProcessor(QThread):
         return out_path
 
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
-        """Buat path output unik, tidak overwrite file existing."""
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
         out     = os.path.join(out_dir, f"{base}_upscaled_{quality}{ext}")
@@ -769,14 +827,6 @@ class A1DProcessor(QThread):
 
     # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════════
     def _wait_and_download(self, out_dir: str) -> str:
-        """
-        Tunggu tombol Download muncul (sinyal upscale selesai),
-        lalu download hasil:
-
-          [L1] Ambil URL dari tombol Download itu sendiri:
-               blob: → _download_blob_url() | http: → _download_url()
-          [L2] Fallback: _safe_click(tombol) → _wait_for_chrome_download()
-        """
         timeout       = self.config.get("processing_hang_timeout", 1800)
         start         = time.time()
         last_pct      = 88
@@ -787,7 +837,6 @@ class A1DProcessor(QThread):
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
 
-            # ─ Deteksi tombol Download ──────────────────────────────────────────
             if not dl_triggered:
                 try:
                     dl_btns_cache = self.driver.find_elements(
@@ -807,9 +856,7 @@ class A1DProcessor(QThread):
                 self.prog(92, "Mendownload video...")
                 self._apply_download_cdp(out_dir, silent=True)
 
-                # ─ L1: URL dari tombol itu sendiri ──────────────────────
                 dl_url = self._extract_url_from_element(dl_btns_cache[0])
-
                 if dl_url:
                     url_type = dl_url.get('type', '')
                     url      = dl_url.get('url', '')
@@ -820,9 +867,7 @@ class A1DProcessor(QThread):
                         out_path = self._build_output_path(out_dir)
                         return self._download_blob_url(url, out_path)
 
-                # ─ L2: Fallback — klik tombol via _safe_click (bypass overlay) ─
                 self.log("⏳ [L2] Klik tombol Download via safe_click...", "INFO")
-
                 default_dl      = os.path.join(os.path.expanduser("~"), "Downloads")
                 dl_snapshot_pre = set()
                 if os.path.isdir(default_dl):
@@ -837,7 +882,6 @@ class A1DProcessor(QThread):
                     out_dir, before_out, dl_snapshot_pre, click_time, timeout=600
                 )
 
-            # Belum ada tombol download — update progress
             elapsed = time.time() - start
             pct = min(91, 88 + int((elapsed / timeout) * 3))
             if pct > last_pct:
@@ -855,10 +899,6 @@ class A1DProcessor(QThread):
         click_time:      float,
         timeout:         int = 600,
     ) -> str:
-        """
-        Tunggu Chrome selesai download lalu kembalikan path file.
-        Prioritas: out_dir (CDP) → ~/Downloads snapshot → mtime fallback.
-        """
         start      = time.time()
         default_dl = os.path.join(os.path.expanduser("~"), "Downloads")
         use_fb     = (os.path.isdir(default_dl) and
@@ -871,7 +911,6 @@ class A1DProcessor(QThread):
         while time.time() - start < timeout:
             if self._cancelled: raise InterruptedError("Dibatalkan")
 
-            # ─ 1. Cek out_dir ────────────────────────────────────────────────
             try:
                 new_out = [
                     os.path.join(out_dir, f)
@@ -886,7 +925,6 @@ class A1DProcessor(QThread):
             except Exception:
                 pass
 
-            # ─ 2. Fallback ~/Downloads ─────────────────────────────────────────
             if use_fb:
                 try:
                     current_dl  = set(os.listdir(default_dl))
@@ -959,7 +997,6 @@ class A1DProcessor(QThread):
 
             time.sleep(1.5)
 
-        # Last resort
         try:
             all_out = sorted(
                 [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.endswith(".mp4")],
