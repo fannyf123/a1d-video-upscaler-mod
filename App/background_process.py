@@ -631,66 +631,44 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"⚠️ _start_upscale JS: {e}", "WARNING")
 
-    # ══ SOTONG-HD STYLE: INTERCEPT DOWNLOAD URL DARI DOM ═════════════════════════
-    def _intercept_download_url(self) -> dict | None:
+    # ══ EXTRACT URL DARI TOMBOL DOWNLOAD (SotongHD blob technique) ═══════════════
+    def _extract_url_from_element(self, element) -> dict | None:
         """
-        SotongHD-style: Scan DOM untuk URL video yang bisa didownload
-        tanpa harus klik tombol Download.
+        Ekstrak blob/http URL dari elemen tombol Download itu sendiri
+        (bukan scan seluruh DOM, untuk menghindari video preview).
 
-        Priority:
-          1. <a href="blob:..."> atau <a href="...mp4"> atau <a download>
-          2. <video src="..."> atau <video><source src="...">
-          3. Button/anchor dengan text 'Download' yang punya href
+        Traverse ke parent tree max 8 level untuk cari href.
+        Juga cek atribut data-* yang berisi URL video.
 
         Returns:
-          dict {'type': 'http'|'blob'|'data', 'url': str} atau None
+          dict {'type': 'blob'|'http', 'url': str} atau None
         """
         try:
             result = self.driver.execute_script("""
-                // 1. Cari <a> dengan href yang mengarah ke video/download
-                const anchors = document.querySelectorAll('a[href], a[download]');
-                for (const a of anchors) {
-                    const href = a.href || a.getAttribute('href') || '';
-                    if (!href) continue;
-                    if (href.startsWith('blob:')) return {type: 'blob', url: href};
-                    if (href.startsWith('http') && (
-                        href.includes('.mp4') || href.includes('.webm') ||
-                        href.includes('video') || href.includes('download') ||
-                        a.hasAttribute('download')
-                    )) return {type: 'http', url: href};
-                }
-
-                // 2. Cari <video> atau <source> element
-                const videoEls = document.querySelectorAll('video[src], video source[src]');
-                for (const v of videoEls) {
-                    const src = v.src || v.getAttribute('src') || '';
-                    if (!src) continue;
-                    if (src.startsWith('blob:')) return {type: 'blob', url: src};
-                    if (src.startsWith('http')) return {type: 'http', url: src};
-                }
-
-                // 3. Cari elemen interaktif dengan text 'Download' yang punya href
-                const clickables = document.querySelectorAll('button, a, [role="button"]');
-                for (const el of clickables) {
-                    const txt = el.textContent.trim().toLowerCase();
-                    if (!txt.includes('download')) continue;
-                    const href = el.href || el.getAttribute('href') || '';
-                    if (href.startsWith('blob:')) return {type: 'blob', url: href};
-                    if (href.startsWith('http')) return {type: 'http', url: href};
-                    // Cek atribut data-* untuk URL
-                    for (const attr of el.attributes) {
-                        if (attr.value && attr.value.startsWith('http') &&
-                            (attr.value.includes('.mp4') || attr.value.includes('video'))) {
-                            return {type: 'http', url: attr.value};
-                        }
+                let el = arguments[0];
+                for (let i = 0; i < 8; i++) {
+                    // Cek href
+                    const href = el.getAttribute('href') || el.href || '';
+                    if (href) {
+                        if (href.startsWith('blob:')) return {type: 'blob', url: href};
+                        if (href.startsWith('http')) return {type: 'http', url: href};
                     }
+                    // Cek atribut data-* yang mengandung URL video
+                    for (const attr of el.attributes) {
+                        const v = attr.value || '';
+                        if (v.startsWith('blob:')) return {type: 'blob', url: v};
+                        if (v.startsWith('http') && (
+                            v.includes('.mp4') || v.includes('.webm') || v.includes('video')
+                        )) return {type: 'http', url: v};
+                    }
+                    if (!el.parentElement) break;
+                    el = el.parentElement;
                 }
-
                 return null;
-            """)
+            """, element)
             return result
         except Exception as e:
-            self.log(f"⚠️ _intercept_download_url: {e}", "INFO")
+            self.log(f"⚠️ _extract_url_from_element: {e}", "INFO")
             return None
 
     def _download_blob_url(self, blob_url: str, out_path: str) -> str:
@@ -729,7 +707,7 @@ class A1DProcessor(QThread):
         return out_path
 
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
-        """Buat path output yang unik (tidak overwrite file existing)."""
+        """Buat path output yang unik, tidak overwrite file existing."""
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
         out     = os.path.join(out_dir, f"{base}_upscaled_{quality}{ext}")
@@ -742,56 +720,28 @@ class A1DProcessor(QThread):
     # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════════
     def _wait_and_download(self, out_dir: str) -> str:
         """
-        Tunggu upscale selesai lalu download hasil.
+        Tunggu tombol Download muncul (sinyal upscale selesai),
+        lalu download hasil dengan 3 layer:
 
-        Urutan layer (SotongHD-inspired):
-          Layer 0 [PRIORITY]: _intercept_download_url() — scan DOM tanpa klik
-            - blob: URL  → _download_blob_url() via JS fetch+FileReader
-            - http: URL  → _download_url() via requests.get
-            - data: URL  → decode base64 langsung ke file
-          Layer 1 [FALLBACK]: Deteksi tombol Download, klik, tunggu Chrome
-            - href http   → _download_url()
-            - blob/no-href → _wait_for_chrome_download()
+          [L1] Ambil URL dari tombol Download itu sendiri:
+               - blob: href → _download_blob_url() via JS fetch+FileReader
+               - http: href → _download_url() via requests
+          [L2] Fallback: klik tombol → _wait_for_chrome_download()
+
+        NOTE: Tidak scan seluruh DOM (menghindari menangkap video preview
+        yang ada sebelum upscale selesai).
         """
-        timeout      = self.config.get("processing_hang_timeout", 1800)
-        start        = time.time()
-        last_pct     = 88
-        dl_triggered = False
+        timeout       = self.config.get("processing_hang_timeout", 1800)
+        start         = time.time()
+        last_pct      = 88
+        dl_triggered  = False
         dl_btns_cache = []
 
         while time.time() - start < timeout:
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
 
-            # ──────────────────────────────────────────────────
-            # LAYER 0: SotongHD-style — intersep URL dari DOM
-            # ──────────────────────────────────────────────────
-            intercepted = self._intercept_download_url()
-            if intercepted:
-                url_type = intercepted.get('type', '')
-                url      = intercepted.get('url', '')
-                self.log(f"🎯 [L0] Intercepted {url_type.upper()} URL dari DOM", "SUCCESS")
-                self.prog(92, "Mendownload video (SotongHD)...")
-
-                if url_type == 'http':
-                    return self._download_url(url, out_dir)
-
-                elif url_type == 'blob':
-                    out_path = self._build_output_path(out_dir)
-                    return self._download_blob_url(url, out_path)
-
-                elif url_type == 'data':
-                    out_path = self._build_output_path(out_dir)
-                    _, b64   = url.split(',', 1)
-                    data_bytes = base64.b64decode(b64)
-                    with open(out_path, 'wb') as f:
-                        f.write(data_bytes)
-                    self.log(f"✅ [L0] data URL tersimpan: {os.path.basename(out_path)}", "SUCCESS")
-                    return out_path
-
-            # ──────────────────────────────────────────────────
-            # LAYER 1: Fallback — deteksi tombol Download, lalu klik
-            # ──────────────────────────────────────────────────
+            # ─ Deteksi tombol Download ──────────────────────────────────────────
             if not dl_triggered:
                 try:
                     dl_btns_cache = self.driver.find_elements(
@@ -807,30 +757,28 @@ class A1DProcessor(QThread):
                     pass
 
             if dl_triggered and dl_btns_cache:
-                self.log("✅ [L1] Tombol Download terdeteksi (fallback)", "SUCCESS")
-                self.prog(92, "Mendownload video (fallback klik)...")
+                self.log("✅ Video siap di-download!", "SUCCESS")
+                self.prog(92, "Mendownload video...")
                 self._apply_download_cdp(out_dir, silent=True)
 
-                # Cek href di parent tree (SotongHD pattern)
-                href = None
-                try:
-                    href = self.driver.execute_script("""
-                        let el = arguments[0];
-                        for (let i = 0; i < 6; i++) {
-                            const h = el.getAttribute('href') || el.href || '';
-                            if (h && h.startsWith('http')) return h;
-                            if (!el.parentElement) break;
-                            el = el.parentElement;
-                        } return null;
-                    """, dl_btns_cache[0])
-                except Exception:
-                    href = None
+                # ─ L1: Ambil URL dari tombol itu sendiri ───────────────────
+                dl_url = self._extract_url_from_element(dl_btns_cache[0])
 
-                if href and href.startswith("http"):
-                    self.log("🔗 [L1] Download via direct href", "INFO")
-                    return self._download_url(href, out_dir)
+                if dl_url:
+                    url_type = dl_url.get('type', '')
+                    url      = dl_url.get('url', '')
+                    self.log(f"🎯 [L1] {url_type.upper()} URL dari tombol Download", "INFO")
 
-                # Snapshot SEBELUM klik (penting untuk deteksi file baru)
+                    if url_type == 'http':
+                        return self._download_url(url, out_dir)
+
+                    if url_type == 'blob':
+                        out_path = self._build_output_path(out_dir)
+                        return self._download_blob_url(url, out_path)
+
+                # ─ L2: Fallback — klik tombol, tunggu Chrome download ──────
+                self.log("⏳ [L2] Klik tombol Download, tunggu Chrome...", "INFO")
+
                 default_dl      = os.path.join(os.path.expanduser("~"), "Downloads")
                 dl_snapshot_pre = set()
                 if os.path.isdir(default_dl):
@@ -840,13 +788,12 @@ class A1DProcessor(QThread):
                 before_out = set(os.listdir(out_dir))
                 click_time = time.time()
                 dl_btns_cache[0].click()
-                self.log("⏳ [L1] Tunggu Chrome download selesai...", "INFO")
 
                 return self._wait_for_chrome_download(
                     out_dir, before_out, dl_snapshot_pre, click_time, timeout=600
                 )
 
-            # Belum ada hasil apapun — update progress
+            # Belum ada tombol download — update progress
             elapsed = time.time() - start
             pct = min(91, 88 + int((elapsed / timeout) * 3))
             if pct > last_pct:
