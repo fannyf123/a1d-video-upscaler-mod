@@ -4,34 +4,43 @@ from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker
 
 from App.background_process import A1DProcessor
 
-# ───────────────────────────────────────────────────────────────────────────
-MAX_PARALLEL  = 5    # maksimal worker berjalan bersamaan
-STAGGER_DELAY = 15   # detik jeda antar worker start (hindari burst ke a1d.ai)
-# ───────────────────────────────────────────────────────────────────────────
+# ── Batas absolut ──────────────────────────────────────────────────────────────────
+MAX_PARALLEL_LIMIT  = 5    # hard cap — tidak bisa melebihi angka ini
+DEFAULT_WORKERS     = 3    # default jika tidak di-set di config
+DEFAULT_STAGGER     = 15   # detik jeda antar worker (default)
+# ──────────────────────────────────────────────────────────────────
+
+# Keys yang dibaca dari config dict
+# ------------------------------------------------
+# "max_workers"         int  1–5   jumlah worker paralel
+# "batch_stagger_delay" int  ≥0    jeda detik antar worker start
+# ------------------------------------------------
 
 
 class BatchProcessor(QThread):
     """
-    Jalankan hingga MAX_PARALLEL (5) A1DProcessor secara paralel.
+    Jalankan beberapa A1DProcessor secara paralel.
 
-    Setiap worker distart dengan jeda STAGGER_DELAY detik agar
-    tidak semua login ke a1d.ai pada waktu yang sama persis.
+    Jumlah worker dan stagger delay dikontrol dari config:
+
+        config["max_workers"]         = 1–5   (default 3)
+        config["batch_stagger_delay"] = detik  (default 15)
 
     Signals
     -------
     log_signal(str, str)
-        (message, level) — log dari semua worker, prefixed [W1/5], [W2/5] dll.
+        Log dari semua worker, prefix [W1/N] dll.
 
     progress_signal(int, str)
-        (0-100, label) — rata-rata progress semua worker.
+        Rata-rata progress semua worker (0–100).
 
     worker_done(int, bool, str)
-        (worker_index, success, output_path_or_error)
         Dipancarkan setiap kali satu worker selesai.
+        (worker_index, success, output_path_or_error)
 
     finished_signal(bool, str, list)
-        (all_ok, summary_text, [(ok, path_or_err), ...])
         Dipancarkan setelah SEMUA worker selesai.
+        (all_ok, summary_text, [(ok, path_or_err), ...])
     """
 
     log_signal      = Signal(str, str)
@@ -43,16 +52,35 @@ class BatchProcessor(QThread):
         super().__init__()
         if not video_paths:
             raise ValueError("video_paths tidak boleh kosong")
-        self.base_dir    = base_dir
-        self.video_paths = video_paths[:MAX_PARALLEL]   # potong maks 5
-        self.config      = config
-        self._workers: list[A1DProcessor] = []
-        self._cancelled  = False
-        self._mutex      = QMutex()
-        self._results: dict[int, tuple[bool, str]] = {}     # {idx: (ok, path_or_err)}
-        self._pct_map:  dict[int, int]             = {}     # {idx: pct}  progress tiap worker
 
-    # ══ PUBLIC ═════════════════════════════════════════════════════════════════════
+        # ─ Baca setting dari config, clamp ke batas aman ───────────────────
+        cfg_workers = config.get("max_workers", DEFAULT_WORKERS)
+        try:
+            cfg_workers = int(cfg_workers)
+        except (TypeError, ValueError):
+            cfg_workers = DEFAULT_WORKERS
+
+        cfg_stagger = config.get("batch_stagger_delay", DEFAULT_STAGGER)
+        try:
+            cfg_stagger = int(cfg_stagger)
+        except (TypeError, ValueError):
+            cfg_stagger = DEFAULT_STAGGER
+
+        # Clamp
+        self.max_workers   = max(1, min(cfg_workers, MAX_PARALLEL_LIMIT))  # 1–5
+        self.stagger_delay = max(0, cfg_stagger)                            # ≥0 detik
+
+        self.base_dir    = base_dir
+        self.video_paths = video_paths[:self.max_workers]   # potong sesuai max_workers
+        self.config      = config
+
+        self._workers:  list[A1DProcessor]          = []
+        self._cancelled = False
+        self._mutex     = QMutex()
+        self._results:  dict[int, tuple[bool, str]] = {}    # {idx: (ok, path_or_err)}
+        self._pct_map:  dict[int, int]              = {}    # {idx: pct}
+
+    # ══ PUBLIC ════════════════════════════════════════════════════════════════════
     def cancel(self):
         """Cancel semua worker yang sedang berjalan."""
         self._cancelled = True
@@ -62,6 +90,14 @@ class BatchProcessor(QThread):
             except Exception:
                 pass
 
+    @staticmethod
+    def clamp_workers(value) -> int:
+        """Helper: clamp nilai worker ke 1–5 (berguna untuk validasi di UI)."""
+        try:
+            return max(1, min(int(value), MAX_PARALLEL_LIMIT))
+        except (TypeError, ValueError):
+            return DEFAULT_WORKERS
+
     # ══ HELPERS ════════════════════════════════════════════════════════════════════
     def _log(self, msg: str, level: str = "INFO"):
         self.log_signal.emit(msg, level)
@@ -70,12 +106,11 @@ class BatchProcessor(QThread):
         self.progress_signal.emit(pct, msg)
 
     def _avg_pct(self) -> int:
-        """Hitung rata-rata progress semua worker (thread-safe)."""
         with QMutexLocker(self._mutex):
             vals = list(self._pct_map.values())
         return int(sum(vals) / max(len(vals), 1))
 
-    # ══ SLOT: per-worker events ═════════════════════════════════════════════════
+    # ══ SLOT ─ per-worker events ════════════════════════════════════════════════
     def _on_worker_log(self, idx: int, n: int, msg: str, level: str):
         self.log_signal.emit(f"[W{idx+1}/{n}] {msg}", level)
 
@@ -90,7 +125,6 @@ class BatchProcessor(QThread):
             self._results[idx] = (ok, path_or_err)
             self._pct_map[idx] = 100
             done = len(self._results)
-
         n    = len(self.video_paths)
         icon = "✅" if ok else "❌"
         self._log(
@@ -98,16 +132,16 @@ class BatchProcessor(QThread):
             "SUCCESS" if ok else "ERROR"
         )
         self.worker_done.emit(idx, ok, path_or_err)
-        self._prog(
-            min(99, self._avg_pct()),
-            f"Selesai {done}/{n} video"
-        )
+        self._prog(min(99, self._avg_pct()), f"Selesai {done}/{n} video")
 
     # ══ MAIN RUN ══════════════════════════════════════════════════════════════════
     def run(self):
         n = len(self.video_paths)
-        self._log(f"🚀 Batch START — {n} video, max {MAX_PARALLEL} paralel", "INFO")
-        self._log(f"   Stagger: {STAGGER_DELAY}s antar worker", "INFO")
+
+        self._log(f"🚀 Batch START", "INFO")
+        self._log(f"   ├ Workers  : {self.max_workers} (max {MAX_PARALLEL_LIMIT})", "INFO")
+        self._log(f"   ├ Video     : {n} file", "INFO")
+        self._log(f"   └ Stagger   : {self.stagger_delay}s antar worker", "INFO")
         self._log("-" * 56, "INFO")
         self._prog(0, f"Batch: 0/{n} selesai")
 
@@ -123,7 +157,6 @@ class BatchProcessor(QThread):
 
             worker = A1DProcessor(self.base_dir, vpath, self.config)
 
-            # Hubungkan sinyal (gunakan default arg capture agar lambda tidak shared)
             worker.log_signal.connect(
                 lambda msg, lvl, i=idx, total=n:
                     self._on_worker_log(i, total, msg, lvl)
@@ -139,20 +172,18 @@ class BatchProcessor(QThread):
 
             self._workers.append(worker)
             worker.start()
-
             self._log(
                 f"▶️  Worker {idx+1}/{n} dimulai — {os.path.basename(vpath)}",
                 "INFO"
             )
 
-            # Stagger: jeda sebelum start worker berikutnya
-            if idx < n - 1 and not self._cancelled:
+            # Stagger (0 = tidak ada jeda)
+            if self.stagger_delay > 0 and idx < n - 1 and not self._cancelled:
                 self._log(
-                    f"   ⏸ Tunggu {STAGGER_DELAY}s sebelum start Worker {idx+2}/{n}...",
+                    f"   ⏸ Stagger {self.stagger_delay}s sebelum Worker {idx+2}/{n}...",
                     "INFO"
                 )
-                # Sleep dalam potongan kecil agar cancel bisa segera dideteksi
-                for _ in range(STAGGER_DELAY):
+                for _ in range(self.stagger_delay):
                     if self._cancelled:
                         break
                     time.sleep(1)
@@ -160,7 +191,7 @@ class BatchProcessor(QThread):
         # ─ Tunggu semua worker selesai ──────────────────────────────────────────
         self._log("⏳ Menunggu semua worker selesai...", "INFO")
         for w in self._workers:
-            w.wait()  # block hingga QThread selesai
+            w.wait()
 
         # ─ Summary ────────────────────────────────────────────────────────────────
         n_ok   = sum(1 for ok, _ in self._results.values() if ok)
@@ -172,9 +203,9 @@ class BatchProcessor(QThread):
         self._log("=" * 56, "INFO")
         self._log(summary, "SUCCESS" if all_ok else "WARNING")
         for i in range(n):
-            ok, val    = self._results.get(i, (False, "tidak diproses"))
-            icon       = "✅" if ok else "❌"
-            vname      = os.path.basename(self.video_paths[i])
+            ok, val = self._results.get(i, (False, "tidak diproses"))
+            icon    = "✅" if ok else "❌"
+            vname   = os.path.basename(self.video_paths[i])
             self._log(f"  {icon} [W{i+1}] {vname}", "INFO")
             self._log(f"       └ {val}", "SUCCESS" if ok else "ERROR")
         self._log("=" * 56, "INFO")
