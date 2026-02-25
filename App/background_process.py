@@ -33,6 +33,9 @@ QUALITY_TEXTS = {
 
 QUALITY_PRIORITY: dict[str, list[str]] = {}
 
+# Waktu tunggu awal setelah upscale dimulai sebelum mulai polling tombol Download (detik)
+INITIAL_DOWNLOAD_WAIT = 120
+
 
 class A1DProcessor(QThread):
     log_signal      = Signal(str, str)
@@ -203,6 +206,25 @@ class A1DProcessor(QThread):
             self._start_upscale()
             self.log("⚙️ Proses upscale dimulai!", "SUCCESS")
 
+            # ───────────────────────────────────────────────────────
+            # Tunggu 2 menit sebelum mulai polling tombol Download.
+            # Server butuh waktu untuk memulai render — jika polling
+            # terlalu cepat, tombol belum muncul atau masih merupakan
+            # tombol proses sebelumnya.
+            # ───────────────────────────────────────────────────────
+            wait_sec = INITIAL_DOWNLOAD_WAIT
+            self.log(f"⏳ Tunggu {wait_sec // 60} menit sebelum cek tombol Download...", "INFO")
+            for remaining in range(wait_sec, 0, -1):
+                if self._cancelled:
+                    raise InterruptedError("Dibatalkan")
+                # Log setiap 30 detik dan 10 detik terakhir
+                if remaining % 30 == 0 or remaining <= 10:
+                    self.prog(87, f"⏳ Menunggu server render... {remaining}s")
+                    self.log(f"   └ sisa {remaining}s", "INFO")
+                time.sleep(1)
+            self.log("✅ Initial wait selesai, mulai cek tombol Download", "INFO")
+            # ───────────────────────────────────────────────────────
+
             self.prog(88, "Menunggu proses selesai (5-30 menit)...")
             out_path = self._wait_and_download(out_dir)
             self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
@@ -239,8 +261,6 @@ class A1DProcessor(QThread):
           1. scrollIntoView + JS element.click()  — bypass overlay sepenuhnya
           2. ActionChains move_to_element + click  — simulasi mouse lebih alami
           3. Native .click()                       — last resort
-
-        Returns True jika salah satu layer berhasil.
         """
         tag = label or "elemen"
 
@@ -657,7 +677,6 @@ class A1DProcessor(QThread):
                 btn = self.driver.find_element(By.XPATH, xpath)
                 if btn.is_displayed() and btn.is_enabled():
                     self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                    # Gunakan _safe_click untuk bypass overlay
                     self._safe_click(btn, xpath.split("'")[1] if "'" in xpath else "upscale btn")
                     self.log(f"✅ Upscale via: {xpath}", "INFO")
                     time.sleep(2); return
@@ -682,8 +701,7 @@ class A1DProcessor(QThread):
     # ══ EXTRACT URL DARI TOMBOL DOWNLOAD ═══════════════════════════════════════
     def _extract_url_from_element(self, element) -> dict | None:
         """
-        Ekstrak blob/http URL dari elemen tombol Download itu sendiri
-        (bukan scan seluruh DOM, untuk menghindari video preview).
+        Ekstrak blob/http URL dari elemen tombol Download itu sendiri.
         Traverse ke parent tree max 8 level.
         """
         try:
@@ -758,7 +776,6 @@ class A1DProcessor(QThread):
           [L1] Ambil URL dari tombol Download itu sendiri:
                blob: → _download_blob_url() | http: → _download_url()
           [L2] Fallback: _safe_click(tombol) → _wait_for_chrome_download()
-               _safe_click memakai JS click untuk bypass overlay/interceptor.
         """
         timeout       = self.config.get("processing_hang_timeout", 1800)
         start         = time.time()
@@ -814,8 +831,6 @@ class A1DProcessor(QThread):
 
                 before_out = set(os.listdir(out_dir))
                 click_time = time.time()
-
-                # Pakai _safe_click: JS click → ActionChains → native .click()
                 self._safe_click(dl_btns_cache[0], "Download button")
 
                 return self._wait_for_chrome_download(
