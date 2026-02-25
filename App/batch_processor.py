@@ -155,10 +155,7 @@ class BatchProcessor(QThread):
                 "WARNING",
             )
 
-        # ─ Push 100% IMMEDIATELY — BEFORE waiting for browser cleanup ──────────
-        # Workers may still be in _quit_browser() (closing Playwright/Chromium).
-        # We emit 100% + finished_signal right away so the UI unlocks without
-        # waiting for potentially-slow browser.close() calls.
+        # ─ Emit 100% + finished_signal IMMEDIATELY ─────────────────────────
         n_ok   = sum(1 for ok, _ in self._results.values() if ok)
         n_fail = n - n_ok
         all_ok = n_fail == 0
@@ -176,17 +173,15 @@ class BatchProcessor(QThread):
             self._log(f"       └ {val}", "SUCCESS" if ok else "ERROR")
         self._log("=" * 56, "INFO")
 
-        # ✔️ Unlock UI immediately
         self._prog(100, summary)
         results_list = [
             self._results.get(i, (False, "tidak diproses")) for i in range(n)
         ]
         self.finished_signal.emit(all_ok, summary, results_list)
 
-        # ─ Background cleanup: wait briefly for browser threads to finish ────
-        # (non-blocking from the UI perspective — already emitted finished_signal)
-        # _quit_browser() itself has a daemon thread + 8s timeout, so workers
-        # should finish quickly.  We give them an extra 3s grace period here.
+        # ─ Brief grace period for browser cleanup threads ───────────────────
+        # NOTE: QThread.wait() in PySide6 takes a POSITIONAL int (ms), NOT
+        # a keyword argument (msecs=...).  Using keyword raises AttributeError.
         for w in self._workers:
             if w.isRunning():
-                w.wait(msecs=3_000)
+                w.wait(3_000)   # ← positional only
