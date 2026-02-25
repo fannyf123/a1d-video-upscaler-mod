@@ -130,12 +130,10 @@ class A1DProcessor(QThread):
             self._register(wait, email, password)
             self.log(f"Register dengan email: {email}", "INFO")
 
-            # FIX: Catat timestamp SETELAH register dikirim
-            # Ini dipakai untuk filter email agar hanya baca email BARU
+            # Catat timestamp tepat setelah register dikirim
             otp_request_time = int(time.time())
-            self.log(f"Timestamp registrasi: {time.strftime('%H:%M:%S', time.localtime(otp_request_time))}", "INFO")
 
-            # Step 3b: Tunggu form OTP muncul di halaman SEBELUM polling Gmail
+            # Step 3b: Tunggu form OTP muncul di halaman
             self.prog(25, "Menunggu form OTP muncul di halaman...")
             self.log("⏳ Menunggu form OTP di halaman...", "INFO")
             self._wait_for_otp_form(timeout=30)
@@ -145,24 +143,23 @@ class A1DProcessor(QThread):
             self.prog(30, "Menunggu OTP dari Gmail...")
             self.log("─" * 40, "INFO")
             self.log("📬 Membaca OTP dari Gmail...", "INFO")
-            self.log(f"   Mask: {email}", "INFO")
-            self.log(f"   Hanya email SETELAH: {time.strftime('%H:%M:%S', time.localtime(otp_request_time))}", "INFO")
+            self.log("Cek email yang diteruskan Firefox Relay ke Gmail Anda", "INFO")
             self.log("─" * 40, "INFO")
 
             gmail = GmailOTPReader(self.base_dir)
 
-            def _gmail_log(msg: str, level: str):
-                self.log(f"   [Gmail] {msg}", level)
+            def _gmail_log(msg: str, level: str = "INFO"):
+                self.log(f"[Gmail] {msg}", level)
                 if "berlalu" in msg:
                     self.prog(30, msg)
 
             otp = gmail.wait_for_otp(
-                sender="a1d.ai",
-                mask_email=email,               # FIX: hanya baca email ke mask ini
-                after_timestamp=otp_request_time,  # FIX: abaikan email sebelum register
-                timeout=180,
-                interval=5,
-                log_callback=_gmail_log
+                sender          = "a1d.ai",
+                mask_email      = email,            # filter hanya email ke mask ini
+                after_timestamp = otp_request_time, # abaikan email sebelum register
+                timeout         = 180,
+                interval        = 5,
+                log_callback    = _gmail_log,
             )
 
             self.log(f"✅ OTP diterima: {otp}", "SUCCESS")
@@ -171,7 +168,7 @@ class A1DProcessor(QThread):
             self.prog(40, "Memasukkan OTP ke halaman...")
             self._input_otp(wait, otp)
 
-            # Step 5b: Submit OTP dan verifikasi redirect
+            # Step 5b: Submit OTP dan verifikasi
             self.prog(45, "Submit & verifikasi OTP...")
             success = self._click_otp_submit_and_verify(wait)
             if not success:
@@ -246,10 +243,7 @@ class A1DProcessor(QThread):
         submit.click()
 
     def _wait_for_otp_form(self, timeout: int = 30):
-        """
-        Tunggu sampai form OTP benar-benar muncul di halaman.
-        Langkah krusial sebelum polling Gmail.
-        """
+        """Tunggu sampai form OTP benar-benar muncul di halaman."""
         deadline = time.time() + timeout
         OTP_SELS = [
             'input[autocomplete="one-time-code"]',
@@ -275,9 +269,7 @@ class A1DProcessor(QThread):
         self.log("⚠️ Form OTP tidak terdeteksi dalam timeout — lanjut tetap", "WARNING")
 
     def _input_otp(self, wait: WebDriverWait, otp: str):
-        """
-        Isi field OTP di halaman menggunakan CSS selectors lengkap.
-        """
+        """Isi field OTP menggunakan CSS selectors lengkap."""
         driver = self.driver
         OTP_SELS = [
             'input[autocomplete="one-time-code"]',
@@ -300,7 +292,7 @@ class A1DProcessor(QThread):
             except NoSuchElementException:
                 continue
 
-        # Fallback: individual digit boxes (maxlength="1")
+        # Fallback: individual digit boxes
         digits = driver.find_elements(By.CSS_SELECTOR, 'input[maxlength="1"]')
         if len(digits) >= len(otp):
             for i, ch in enumerate(otp):
@@ -323,10 +315,7 @@ class A1DProcessor(QThread):
             raise RuntimeError(f"❌ Input OTP tidak ditemukan di halaman: {e}")
 
     def _click_otp_submit_and_verify(self, wait: WebDriverWait, max_retries: int = 3) -> bool:
-        """
-        Submit OTP dan verifikasi redirect ke home/dashboard.
-        Dengan retry dan fallback Enter key.
-        """
+        """Submit OTP dan verifikasi redirect ke home/dashboard."""
         driver = self.driver
         SUBMIT_XPATHS = [
             "//button[@type='submit']",
