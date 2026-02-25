@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎬 A1D Video Upscaler v2
+# 🎬 A1D Video Upscaler Batch
 
 **Otomasi upscale video via [a1d.ai](https://a1d.ai) dengan antarmuka GUI modern**
 
@@ -166,5 +166,5 @@ Tool ini dibuat untuk keperluan **pribadi/edukasi**. Penggunaan berlebihan dapat
 ---
 
 <div align="center">
-Made with ❤️ by <a href="https://github.com/fannyf123">fannyf123</a>
+Made with ❤️ by <a href="https://github.com/fannyf123">fannyf</a>
 </div>
