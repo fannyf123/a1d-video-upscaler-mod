@@ -27,7 +27,6 @@ class A1DProcessor(QThread):
     progress_signal = Signal(int, str)
     finished_signal = Signal(bool, str, str)
 
-    # URL bisa dioverride via config["a1d_url"]
     _DEFAULT_BASE = "https://a1d.ai"
 
     def __init__(self, base_dir: str, video_path: str, config: dict):
@@ -40,6 +39,12 @@ class A1DProcessor(QThread):
         self._browser   = None
         self._cancelled = False
 
+        # ── Mask cleanup state ───────────────────────────────
+        # Stored as instance vars so _cleanup_mask() can reach them
+        # regardless of where in the process an error / cancel occurs.
+        self._relay   = None
+        self._mask_id = None
+
         base = self.config.get("a1d_url", self._DEFAULT_BASE).rstrip("/")
         self.SIGNIN_URL = f"{base}/auth/sign-in"
         self.EDITOR_URL = f"{base}/video-upscaler/editor"
@@ -48,7 +53,7 @@ class A1DProcessor(QThread):
     def log(self, msg, level="INFO"): self.log_signal.emit(msg, level)
     def prog(self, pct, msg=""):      self.progress_signal.emit(pct, msg)
 
-    # ══ MAIN RUN ═══════════════════════════════════════════════════════
+    # ══ MAIN RUN ═══════════════════════════════════════════════════════════════
     def run(self):
         try:
             out = self._process()
@@ -58,19 +63,40 @@ class A1DProcessor(QThread):
             self.log(f"Error: {e}", "ERROR")
             self.finished_signal.emit(False, str(e), "")
         finally:
+            # ✔️ Mask ALWAYS deleted here — after success, error, OR cancel.
+            # Never deleted mid-process (e.g. right after OTP).
+            self._cleanup_mask()
             self._quit_browser()
 
-    # ══ CORE PROCESS ════════════════════════════════════════════════════════
+    def _cleanup_mask(self):
+        """Delete the Firefox Relay mask. Safe to call multiple times."""
+        if self._relay and self._mask_id:
+            try:
+                self._relay.delete_mask(self._mask_id)
+                self.log("Email mask dihapus", "INFO")
+            except Exception:
+                pass
+            finally:
+                self._relay   = None
+                self._mask_id = None
+
+    # ══ CORE PROCESS ═══════════════════════════════════════════════════════════
     def _process(self) -> str:
         self.log("Memulai proses upscale...", "INFO")
         self.prog(5, "Membuat email mask...")
         api_key = self.config.get("relay_api_key", "").strip()
         if not api_key:
             raise ValueError("Firefox Relay API Key belum diset!")
+
         relay     = FirefoxRelay(api_key)
         mask_data = relay.create_mask("a1d-upscale-session")
         email     = mask_data["full_address"]
         mask_id   = mask_data["id"]
+
+        # Store on instance — cleanup happens in run()'s finally, not here
+        self._relay   = relay
+        self._mask_id = mask_id
+
         self.log(f"Email mask: {email}", "SUCCESS")
         self.prog(10, "Email mask siap")
 
@@ -81,7 +107,7 @@ class A1DProcessor(QThread):
         os.makedirs(out_dir, exist_ok=True)
         self.log(f"📁 Output: {out_dir}", "INFO")
 
-        # ─ Launch Playwright Chromium ────────────────────────────────────────────────
+        # ─ Launch Playwright Chromium ─────────────────────────────────────────────────────
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
             headless       = self.config.get("headless", True),
@@ -110,92 +136,84 @@ class A1DProcessor(QThread):
         self.page.set_default_timeout(30_000)
         self.log("🎮 Playwright Chromium siap", "INFO")
 
-        try:
-            self.prog(15, "Membuka halaman sign-in...")
-            self.log(f"[1] Buka: {self.SIGNIN_URL}", "INFO")
-            self.page.goto(self.SIGNIN_URL, wait_until="domcontentloaded")
-            time.sleep(2.5)
+        self.prog(15, "Membuka halaman sign-in...")
+        self.log(f"[1] Buka: {self.SIGNIN_URL}", "INFO")
+        self.page.goto(self.SIGNIN_URL, wait_until="domcontentloaded")
+        time.sleep(2.5)
 
-            self.prog(20, "Input email mask...")
-            self._fill_email(email)
+        self.prog(20, "Input email mask...")
+        self._fill_email(email)
 
-            self.prog(25, "Submit email...")
-            otp_request_time = int(time.time())
-            self._click_submit()
+        self.prog(25, "Submit email...")
+        otp_request_time = int(time.time())
+        self._click_submit()
 
-            self.prog(30, "Menunggu form OTP...")
-            self._wait_for_otp_form(timeout=30)
-            self.log("✅ Form OTP terdeteksi", "SUCCESS")
+        self.prog(30, "Menunggu form OTP...")
+        self._wait_for_otp_form(timeout=30)
+        self.log("✅ Form OTP terdeteksi", "SUCCESS")
 
-            self.prog(38, "Menunggu OTP dari Gmail...")
-            gmail = GmailOTPReader(self.base_dir)
-            otp = gmail.wait_for_otp(
-                sender          = "a1d.ai",
-                mask_email      = email,
-                after_timestamp = otp_request_time,
-                timeout         = 180,
-                interval        = 5,
-                log_callback    = lambda m, lv="INFO": self.log(f"[Gmail] {m}", lv),
-            )
-            self.log(f"✅ OTP: {otp}", "SUCCESS")
+        self.prog(38, "Menunggu OTP dari Gmail...")
+        gmail = GmailOTPReader(self.base_dir)
+        otp = gmail.wait_for_otp(
+            sender          = "a1d.ai",
+            mask_email      = email,
+            after_timestamp = otp_request_time,
+            timeout         = 180,
+            interval        = 5,
+            log_callback    = lambda m, lv="INFO": self.log(f"[Gmail] {m}", lv),
+        )
+        self.log(f"✅ OTP: {otp}", "SUCCESS")
 
-            self.prog(50, "Memasukkan OTP...")
-            self._fill_otp(otp)
-            self.prog(58, "Submit OTP...")
-            if not self._click_otp_submit_and_verify():
-                raise RuntimeError("❌ OTP salah/kadaluarsa")
-            time.sleep(2)
+        self.prog(50, "Memasukkan OTP...")
+        self._fill_otp(otp)
+        self.prog(58, "Submit OTP...")
+        if not self._click_otp_submit_and_verify():
+            raise RuntimeError("❌ OTP salah/kadaluarsa")
+        time.sleep(2)
 
-            self.prog(65, "Menunggu login berhasil...")
-            self._wait_for_home(timeout=30)
-            self.log(f"✅ Login: {self.page.url}", "SUCCESS")
+        self.prog(65, "Menunggu login berhasil...")
+        self._wait_for_home(timeout=30)
+        self.log(f"✅ Login: {self.page.url}", "SUCCESS")
 
-            self.prog(72, "Membuka video editor...")
-            self.log(f"[2] Buka: {self.EDITOR_URL}", "INFO")
-            self.page.goto(self.EDITOR_URL, wait_until="domcontentloaded")
-            time.sleep(3)
+        self.prog(72, "Membuka video editor...")
+        self.log(f"[2] Buka: {self.EDITOR_URL}", "INFO")
+        self.page.goto(self.EDITOR_URL, wait_until="domcontentloaded")
+        time.sleep(3)
 
-            self.prog(78, "Mengupload video...")
-            self._upload_video()
-            time.sleep(6)
+        self.prog(78, "Mengupload video...")
+        self._upload_video()
+        time.sleep(6)
 
-            self.prog(82, "Memilih kualitas...")
-            self._select_quality(self.config.get("output_quality", "4k").lower())
+        self.prog(82, "Memilih kualitas...")
+        self._select_quality(self.config.get("output_quality", "4k").lower())
 
-            self.prog(86, "Memulai upscale...")
-            self._start_upscale()
-            self.log("⚙️ Proses upscale dimulai!", "SUCCESS")
+        self.prog(86, "Memulai upscale...")
+        self._start_upscale()
+        self.log("⚙️ Proses upscale dimulai!", "SUCCESS")
 
-            # ─ Initial wait — dibaca dari config ────────────────────────────────
-            wait_sec = max(0, int(self.config.get("initial_download_wait", 120)))
-            if wait_sec > 0:
-                mins = wait_sec // 60
-                secs = wait_sec % 60
-                label = f"{mins}m {secs}s" if mins else f"{secs}s"
-                self.log(f"⏳ Tunggu {label} sebelum cek tombol Download...", "INFO")
-                for remaining in range(wait_sec, 0, -1):
-                    if self._cancelled:
-                        raise InterruptedError("Dibatalkan")
-                    if remaining % 30 == 0 or remaining <= 10:
-                        self.prog(87, f"⏳ Menunggu server render... {remaining}s")
-                        self.log(f"   └ sisa {remaining}s", "INFO")
-                    time.sleep(1)
-                self.log("✅ Initial wait selesai, mulai cek tombol Download", "INFO")
+        # ─ Initial wait ───────────────────────────────────────────────────────────────
+        wait_sec = max(0, int(self.config.get("initial_download_wait", 120)))
+        if wait_sec > 0:
+            mins  = wait_sec // 60
+            secs  = wait_sec % 60
+            label = f"{mins}m {secs}s" if mins else f"{secs}s"
+            self.log(f"⏳ Tunggu {label} sebelum cek tombol Download...", "INFO")
+            for remaining in range(wait_sec, 0, -1):
+                if self._cancelled:
+                    raise InterruptedError("Dibatalkan")
+                if remaining % 30 == 0 or remaining <= 10:
+                    self.prog(87, f"⏳ Menunggu server render... {remaining}s")
+                    self.log(f"   └ sisa {remaining}s", "INFO")
+                time.sleep(1)
+            self.log("✅ Initial wait selesai, mulai cek tombol Download", "INFO")
 
-            self.prog(88, "Menunggu proses selesai...")
-            out_path = self._wait_and_download(out_dir)
-            self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
-
-        finally:
-            try:
-                relay.delete_mask(mask_id)
-                self.log("Email mask dihapus", "INFO")
-            except Exception:
-                pass
-
+        self.prog(88, "Menunggu proses selesai...")
+        out_path = self._wait_and_download(out_dir)
+        self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
+        # ✔️ No mask deletion here — it will be handled by run()'s finally block
         return out_path
 
-    # ══ EMAIL ═════════════════════════════════════════════════════════════════════════════
+    # ══ EMAIL ══════════════════════════════════════════════════════════════════════════════
     def _fill_email(self, email: str):
         EMAIL_SELS = [
             A1D_EMAIL_ID,
@@ -255,7 +273,7 @@ class A1DProcessor(QThread):
         self.page.keyboard.press("Enter")
         time.sleep(1.5)
 
-    # ══ OTP ═══════════════════════════════════════════════════════════════════════════
+    # ══ OTP ═══════════════════════════════════════════════════════════════════════════════
     def _wait_for_otp_form(self, timeout: int = 30):
         OTP_SELS = [
             'input[autocomplete="one-time-code"]',
@@ -349,7 +367,7 @@ class A1DProcessor(QThread):
             time.sleep(1)
         self.log(f"⚠️ Timeout /home — {self.page.url}", "WARNING")
 
-    # ══ UPLOAD ═════════════════════════════════════════════════════════════════════════════
+    # ══ UPLOAD ══════════════════════════════════════════════════════════════════════════════
     def _upload_video(self):
         abs_path = os.path.abspath(self.video_path)
         try:
@@ -449,7 +467,7 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"_debug_dump_quality: {e}", "INFO")
 
-    # ══ START UPSCALE ════════════════════════════════════════════════════════════════
+    # ══ START UPSCALE ═══════════════════════════════════════════════════════════
     def _start_upscale(self):
         for text in ["Generate", "Upscale", "Enhance", "Start", "Process"]:
             try:
@@ -479,7 +497,7 @@ class A1DProcessor(QThread):
         if result and result.startswith("clicked:"):
             self.log(f"✅ Upscale (JS): {result}", "INFO")
 
-    # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════════
+    # ══ WAIT & DOWNLOAD ══════════════════════════════════════════════════════════
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
