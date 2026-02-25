@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import base64
 import shutil
 import datetime
 import requests as req
@@ -77,7 +78,7 @@ class A1DProcessor(QThread):
     def log(self, msg, level="INFO"): self.log_signal.emit(msg, level)
     def prog(self, pct, msg=""):      self.progress_signal.emit(pct, msg)
 
-    # ══ MAIN RUN ═══════════════════════════════════════════════════════════════════════
+    # ══ MAIN RUN ═══════════════════════════════════════════════════════
     def run(self):
         try:
             out = self._process()
@@ -89,7 +90,7 @@ class A1DProcessor(QThread):
         finally:
             self._quit_driver()
 
-    # ══ CORE PROCESS ════════════════════════════════════════════════════════════════════
+    # ══ CORE PROCESS ════════════════════════════════════════════════════════
     def _process(self) -> str:
         self.log("Memulai proses upscale...", "INFO")
         self.prog(5, "Membuat email mask...")
@@ -213,7 +214,7 @@ class A1DProcessor(QThread):
 
         return out_path
 
-    # ── CDP helper ──────────────────────────────────────────────────────────────────────
+    # ── CDP helper ──────────────────────────────────────────────────────────────────────────
     def _apply_download_cdp(self, out_dir: str, silent: bool = False):
         norm = os.path.normpath(os.path.abspath(out_dir))
         try:
@@ -226,7 +227,7 @@ class A1DProcessor(QThread):
             if not silent:
                 self.log(f"⚠️ CDP: {e}", "WARNING")
 
-    # ══ EMAIL (4 layers) ═══════════════════════════════════════════════════════════════════
+    # ══ EMAIL (4 layers) ═════════════════════════════════════════════════════════
     def _find_email_field(self):
         id_sel = A1D_EMAIL_ID.lstrip("#")
         for by, sel in [
@@ -328,7 +329,7 @@ class A1DProcessor(QThread):
         if field: field.send_keys(Keys.RETURN); time.sleep(1.5); return
         raise RuntimeError("❌ Tombol submit tidak ditemukan")
 
-    # ══ OTP ═════════════════════════════════════════════════════════════════════════════
+    # ══ OTP ═══════════════════════════════════════════════════════════════════════════
     def _wait_for_otp_form(self, timeout: int = 30):
         deadline = time.time() + timeout
         OTP_SELS = [
@@ -434,7 +435,7 @@ class A1DProcessor(QThread):
                     continue
             raise RuntimeError("❌ Upload area tidak ditemukan")
 
-    # ══ QUALITY SELECTION ═════════════════════════════════════════════════════════════════
+    # ══ QUALITY SELECTION ═════════════════════════════════════════════════════════
     def _wait_for_quality_options(self, timeout: int = 15):
         keywords = ["4K", "2K", "1080", "quality", "resolution", "UHD", "HD"]
         deadline = time.time() + timeout
@@ -598,7 +599,7 @@ class A1DProcessor(QThread):
         self._debug_dump_quality()
         self.log(f"⚠️ Quality {q.upper()} tidak ditemukan — lanjut", "WARNING")
 
-    # ══ START UPSCALE ════════════════════════════════════════════════════════════════════
+    # ══ START UPSCALE ════════════════════════════════════════════════════════════════
     def _start_upscale(self):
         for xpath in [
             "//button[contains(.,'Generate')]", "//button[contains(.,'Upscale')]",
@@ -630,38 +631,187 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"⚠️ _start_upscale JS: {e}", "WARNING")
 
-    # ══ WAIT & DOWNLOAD ══════════════════════════════════════════════════════════════════
+    # ══ SOTONG-HD STYLE: INTERCEPT DOWNLOAD URL DARI DOM ═════════════════════════
+    def _intercept_download_url(self) -> dict | None:
+        """
+        SotongHD-style: Scan DOM untuk URL video yang bisa didownload
+        tanpa harus klik tombol Download.
+
+        Priority:
+          1. <a href="blob:..."> atau <a href="...mp4"> atau <a download>
+          2. <video src="..."> atau <video><source src="...">
+          3. Button/anchor dengan text 'Download' yang punya href
+
+        Returns:
+          dict {'type': 'http'|'blob'|'data', 'url': str} atau None
+        """
+        try:
+            result = self.driver.execute_script("""
+                // 1. Cari <a> dengan href yang mengarah ke video/download
+                const anchors = document.querySelectorAll('a[href], a[download]');
+                for (const a of anchors) {
+                    const href = a.href || a.getAttribute('href') || '';
+                    if (!href) continue;
+                    if (href.startsWith('blob:')) return {type: 'blob', url: href};
+                    if (href.startsWith('http') && (
+                        href.includes('.mp4') || href.includes('.webm') ||
+                        href.includes('video') || href.includes('download') ||
+                        a.hasAttribute('download')
+                    )) return {type: 'http', url: href};
+                }
+
+                // 2. Cari <video> atau <source> element
+                const videoEls = document.querySelectorAll('video[src], video source[src]');
+                for (const v of videoEls) {
+                    const src = v.src || v.getAttribute('src') || '';
+                    if (!src) continue;
+                    if (src.startsWith('blob:')) return {type: 'blob', url: src};
+                    if (src.startsWith('http')) return {type: 'http', url: src};
+                }
+
+                // 3. Cari elemen interaktif dengan text 'Download' yang punya href
+                const clickables = document.querySelectorAll('button, a, [role="button"]');
+                for (const el of clickables) {
+                    const txt = el.textContent.trim().toLowerCase();
+                    if (!txt.includes('download')) continue;
+                    const href = el.href || el.getAttribute('href') || '';
+                    if (href.startsWith('blob:')) return {type: 'blob', url: href};
+                    if (href.startsWith('http')) return {type: 'http', url: href};
+                    // Cek atribut data-* untuk URL
+                    for (const attr of el.attributes) {
+                        if (attr.value && attr.value.startsWith('http') &&
+                            (attr.value.includes('.mp4') || attr.value.includes('video'))) {
+                            return {type: 'http', url: attr.value};
+                        }
+                    }
+                }
+
+                return null;
+            """)
+            return result
+        except Exception as e:
+            self.log(f"⚠️ _intercept_download_url: {e}", "INFO")
+            return None
+
+    def _download_blob_url(self, blob_url: str, out_path: str) -> str:
+        """
+        SotongHD-style: Download blob:// URL menggunakan JS fetch + FileReader.
+        Blob URL hanya bisa diakses dari dalam konteks halaman (same-origin),
+        sehingga harus dikonversi via JS ke base64 terlebih dahulu.
+        """
+        self.log("📥 Download blob via JS fetch + FileReader...", "INFO")
+
+        data_url = self.driver.execute_async_script("""
+            const blobUrl = arguments[0];
+            const callback = arguments[1];
+            fetch(blobUrl)
+                .then(r => r.blob())
+                .then(blob => {
+                    const fr = new FileReader();
+                    fr.onload  = function() { callback(fr.result); };
+                    fr.onerror = function() { callback(null); };
+                    fr.readAsDataURL(blob);
+                })
+                .catch(() => { callback(null); });
+        """, blob_url)
+
+        if not data_url:
+            raise RuntimeError("❌ Gagal konversi blob ke data URL via FileReader")
+
+        _, b64 = data_url.split(',', 1)
+        data_bytes = base64.b64decode(b64)
+
+        with open(out_path, 'wb') as f:
+            f.write(data_bytes)
+
+        size_mb = len(data_bytes) / 1048576
+        self.log(f"✅ Blob tersimpan: {os.path.basename(out_path)} ({size_mb:.1f} MB)", "SUCCESS")
+        return out_path
+
+    def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
+        """Buat path output yang unik (tidak overwrite file existing)."""
+        base    = os.path.splitext(os.path.basename(self.video_path))[0]
+        quality = self.config.get("output_quality", "4k")
+        out     = os.path.join(out_dir, f"{base}_upscaled_{quality}{ext}")
+        cnt = 1
+        while os.path.exists(out):
+            out = os.path.join(out_dir, f"{base}_upscaled_{quality}_{cnt}{ext}")
+            cnt += 1
+        return out
+
+    # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════════
     def _wait_and_download(self, out_dir: str) -> str:
+        """
+        Tunggu upscale selesai lalu download hasil.
+
+        Urutan layer (SotongHD-inspired):
+          Layer 0 [PRIORITY]: _intercept_download_url() — scan DOM tanpa klik
+            - blob: URL  → _download_blob_url() via JS fetch+FileReader
+            - http: URL  → _download_url() via requests.get
+            - data: URL  → decode base64 langsung ke file
+          Layer 1 [FALLBACK]: Deteksi tombol Download, klik, tunggu Chrome
+            - href http   → _download_url()
+            - blob/no-href → _wait_for_chrome_download()
+        """
         timeout      = self.config.get("processing_hang_timeout", 1800)
         start        = time.time()
         last_pct     = 88
-        # Flag: cegah "Video siap di-download!" muncul berulang
         dl_triggered = False
+        dl_btns_cache = []
 
         while time.time() - start < timeout:
-            if self._cancelled: raise InterruptedError("Dibatalkan")
+            if self._cancelled:
+                raise InterruptedError("Dibatalkan")
 
+            # ──────────────────────────────────────────────────
+            # LAYER 0: SotongHD-style — intersep URL dari DOM
+            # ──────────────────────────────────────────────────
+            intercepted = self._intercept_download_url()
+            if intercepted:
+                url_type = intercepted.get('type', '')
+                url      = intercepted.get('url', '')
+                self.log(f"🎯 [L0] Intercepted {url_type.upper()} URL dari DOM", "SUCCESS")
+                self.prog(92, "Mendownload video (SotongHD)...")
+
+                if url_type == 'http':
+                    return self._download_url(url, out_dir)
+
+                elif url_type == 'blob':
+                    out_path = self._build_output_path(out_dir)
+                    return self._download_blob_url(url, out_path)
+
+                elif url_type == 'data':
+                    out_path = self._build_output_path(out_dir)
+                    _, b64   = url.split(',', 1)
+                    data_bytes = base64.b64decode(b64)
+                    with open(out_path, 'wb') as f:
+                        f.write(data_bytes)
+                    self.log(f"✅ [L0] data URL tersimpan: {os.path.basename(out_path)}", "SUCCESS")
+                    return out_path
+
+            # ──────────────────────────────────────────────────
+            # LAYER 1: Fallback — deteksi tombol Download, lalu klik
+            # ──────────────────────────────────────────────────
             if not dl_triggered:
-                # Deteksi tombol Download (hanya sekali)
                 try:
-                    dl_btns = self.driver.find_elements(
+                    dl_btns_cache = self.driver.find_elements(
                         By.XPATH,
                         "//button[normalize-space(.)='Download' or "
                         "contains(normalize-space(.),'Download')] | "
                         "//a[contains(normalize-space(.),'Download') or "
                         "contains(@href,'.mp4')]"
                     )
-                    if dl_btns:
+                    if dl_btns_cache:
                         dl_triggered = True
                 except Exception:
                     pass
 
-            if dl_triggered:
-                self.log("✅ Video siap di-download!", "SUCCESS")
-                self.prog(92, "Mendownload video...")
+            if dl_triggered and dl_btns_cache:
+                self.log("✅ [L1] Tombol Download terdeteksi (fallback)", "SUCCESS")
+                self.prog(92, "Mendownload video (fallback klik)...")
                 self._apply_download_cdp(out_dir, silent=True)
 
-                # Cek href (bisa jadi <a> parent dari <button>)
+                # Cek href di parent tree (SotongHD pattern)
                 href = None
                 try:
                     href = self.driver.execute_script("""
@@ -672,50 +822,47 @@ class A1DProcessor(QThread):
                             if (!el.parentElement) break;
                             el = el.parentElement;
                         } return null;
-                    """, dl_btns[0])
+                    """, dl_btns_cache[0])
                 except Exception:
                     href = None
 
-                # Layer A: direct URL → requests (paling stabil)
                 if href and href.startswith("http"):
-                    self.log(f"🔗 Download via URL", "INFO")
+                    self.log("🔗 [L1] Download via direct href", "INFO")
                     return self._download_url(href, out_dir)
 
-                # Layer B/C: blob/button → Chrome download
-                # ⚠️ KRITIS: snapshot diambil SEBELUM klik agar file baru terdeteksi
-                default_dl     = os.path.join(os.path.expanduser("~"), "Downloads")
+                # Snapshot SEBELUM klik (penting untuk deteksi file baru)
+                default_dl      = os.path.join(os.path.expanduser("~"), "Downloads")
                 dl_snapshot_pre = set()
                 if os.path.isdir(default_dl):
                     try: dl_snapshot_pre = set(os.listdir(default_dl))
                     except Exception: pass
 
-                before_out   = set(os.listdir(out_dir))
-                click_time   = time.time()
-                dl_btns[0].click()
-                self.log("⏳ Tunggu Chrome download selesai...", "INFO")
+                before_out = set(os.listdir(out_dir))
+                click_time = time.time()
+                dl_btns_cache[0].click()
+                self.log("⏳ [L1] Tunggu Chrome download selesai...", "INFO")
 
-                # Panggil tracker — exception di sini TIDAK di-catch agar tidak loop
                 return self._wait_for_chrome_download(
                     out_dir, before_out, dl_snapshot_pre, click_time, timeout=600
                 )
 
-            # Belum ada tombol download — update progress
+            # Belum ada hasil apapun — update progress
             elapsed = time.time() - start
             pct = min(91, 88 + int((elapsed / timeout) * 3))
             if pct > last_pct:
                 last_pct = pct
-                self.prog(pct, f"Upscaling... ({int(elapsed/60)} menit)")
+                self.prog(pct, f"Upscaling... ({int(elapsed / 60)} menit)")
             time.sleep(6)
 
-        raise TimeoutError(f"Timeout setelah {timeout//60} menit")
+        raise TimeoutError(f"Timeout setelah {timeout // 60} menit")
 
     def _wait_for_chrome_download(
         self,
-        out_dir:        str,
-        before_out:     set,
-        dl_snapshot_pre: set,   # snapshot Downloads SEBELUM klik
-        click_time:     float,  # waktu klik tombol download
-        timeout:        int = 600,
+        out_dir:         str,
+        before_out:      set,
+        dl_snapshot_pre: set,
+        click_time:      float,
+        timeout:         int = 600,
     ) -> str:
         """
         Tunggu Chrome selesai download lalu kembalikan path file.
@@ -734,7 +881,7 @@ class A1DProcessor(QThread):
         if use_fb:
             self.log(f"🔍 Fallback monitor: {default_dl}", "INFO")
 
-        last_log = start  # throttle log
+        last_log = start
 
         while time.time() - start < timeout:
             if self._cancelled: raise InterruptedError("Dibatalkan")
@@ -754,33 +901,27 @@ class A1DProcessor(QThread):
             except Exception:
                 pass
 
-            # ─ 2. Fallback ~/Downloads ──────────────────────────────────────────
+            # ─ 2. Fallback ~/Downloads ─────────────────────────────────────────
             if use_fb:
                 try:
-                    current_dl = set(os.listdir(default_dl))
-
-                    # Kandidat dari dua sumber: snapshot diff + mtime
+                    current_dl  = set(os.listdir(default_dl))
                     by_snapshot = current_dl - dl_snapshot_pre
                     by_mtime    = {
                         f for f in current_dl
                         if os.path.getmtime(os.path.join(default_dl, f)) >= click_time - 2
                     }
-                    candidates = by_snapshot | by_mtime
+                    candidates  = by_snapshot | by_mtime
 
-                    # Cek in-progress (.crdownload / .tmp)
                     in_prog = [f for f in candidates
                                if f.endswith(".crdownload") or f.endswith(".tmp")]
 
                     if in_prog:
-                        # Log throttle — maksimal 1x per 8 detik
                         now = time.time()
                         if now - last_log >= 8:
                             try:
                                 sz = os.path.getsize(os.path.join(default_dl, in_prog[0]))
                                 self.log(
-                                    f"📥 Mendownload... "
-                                    f"{sz / 1048576:.1f} MB "
-                                    f"({int(now - start)}s)",
+                                    f"📥 Mendownload... {sz / 1048576:.1f} MB ({int(now - start)}s)",
                                     "INFO"
                                 )
                             except Exception:
@@ -789,15 +930,12 @@ class A1DProcessor(QThread):
                         time.sleep(2)
                         continue
 
-                    # Tidak ada in-progress: cari file yang sudah selesai
                     completed = [
                         f for f in candidates
                         if not f.endswith(".crdownload") and not f.endswith(".tmp")
                     ]
 
-                    # Cek .tmp yang mungkin sudah selesai tapi Chrome tidak rename
-                    # (kasus blob URL — ukuran stabil & > 500 KB)
-                    for f in list(candidates):  # list() agar aman dari modifikasi set
+                    for f in list(candidates):
                         if not f.endswith(".tmp"): continue
                         fp = os.path.join(default_dl, f)
                         try:
@@ -805,11 +943,10 @@ class A1DProcessor(QThread):
                             time.sleep(1.5)
                             sz2 = os.path.getsize(fp)
                             if sz1 == sz2 and sz1 > 500_000:
-                                completed.append(f)  # .tmp stabil = selesai download
+                                completed.append(f)
                         except Exception:
                             pass
 
-                    # Sort by newest
                     completed.sort(
                         key=lambda f: os.path.getmtime(os.path.join(default_dl, f)),
                         reverse=True
@@ -821,17 +958,9 @@ class A1DProcessor(QThread):
                             fsize = os.path.getsize(fpath)
                         except Exception:
                             continue
-                        if fsize < 500_000: continue  # skip file kecil
+                        if fsize < 500_000: continue
 
-                        # Rename ke nama yang benar
-                        base    = os.path.splitext(os.path.basename(self.video_path))[0]
-                        quality = self.config.get("output_quality", "4k")
-                        dest    = os.path.join(out_dir, f"{base}_upscaled_{quality}.mp4")
-                        cnt = 1
-                        while os.path.exists(dest):
-                            dest = os.path.join(out_dir, f"{base}_upscaled_{quality}_{cnt}.mp4")
-                            cnt += 1
-
+                        dest = self._build_output_path(out_dir)
                         shutil.move(fpath, dest)
                         self.log(
                             f"📦 Dipindah dari Downloads → "
@@ -857,10 +986,8 @@ class A1DProcessor(QThread):
         raise TimeoutError("❌ Download Chrome tidak selesai")
 
     def _download_url(self, url: str, out_dir: str) -> str:
-        basename = os.path.splitext(os.path.basename(self.video_path))[0]
-        quality  = self.config.get("output_quality", "4k")
-        out_path = os.path.join(out_dir, f"{basename}_upscaled_{quality}.mp4")
-        self.log(f"Downloading: {out_path}", "INFO")
+        out_path = self._build_output_path(out_dir)
+        self.log(f"Downloading: {os.path.basename(out_path)}", "INFO")
         with req.get(url, stream=True, timeout=self.config.get("download_timeout", 600)) as r:
             r.raise_for_status()
             total = int(r.headers.get("content-length", 0))
@@ -871,7 +998,7 @@ class A1DProcessor(QThread):
                     f.write(chunk); done += len(chunk)
                     if total:
                         self.prog(92 + int((done / total) * 8),
-                                  f"Download {done//1048576}/{total//1048576} MB")
+                                  f"Download {done // 1048576}/{total // 1048576} MB")
         return out_path
 
     def _quit_driver(self):
