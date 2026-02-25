@@ -6,7 +6,6 @@ color 0A
 echo.
 echo  =============================================
 echo    A1D VIDEO UPSCALER v2
-echo    Powered by SotongHD Architecture
 echo  =============================================
 echo.
 
