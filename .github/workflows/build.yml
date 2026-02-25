@@ -1,0 +1,120 @@
+name: 🔧 Build Encrypted EXE (Windows)
+
+# Trigger: manually from GitHub UI or when you push a version tag like v2.4.0
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      # ── 1. Checkout source code ──────────────────────────────────────────────
+      - name: 📥 Checkout Source
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Python ──────────────────────────────────────────────────────
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. Install all dependencies ──────────────────────────────────────────
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pyarmor
+          playwright install chromium --with-deps
+
+      # ── 4. Encrypt source code with PyArmor ──────────────────────────────────
+      # PyArmor encrypts all .py files into obfuscated bytecode.
+      # Without the PyArmor runtime key, the source cannot be recovered.
+      - name: 🔒 Encrypt Source with PyArmor
+        run: |
+          pyarmor gen --output build_obf -r main.py App/
+          Write-Host "PyArmor encryption complete."
+          ls build_obf
+
+      # ── 5. Copy required assets to obfuscated directory ─────────────────────
+      - name: 📂 Copy Assets
+        shell: powershell
+        run: |
+          Copy-Item config.json       build_obf\
+          New-Item -ItemType Directory -Force build_obf\App | Out-Null
+
+      # ── 6. Build EXE with PyInstaller ────────────────────────────────────────
+      # --onedir   : produces a folder (better compatibility with Playwright)
+      # --windowed : no black console window on launch
+      # --upx      : UPX compression (smaller & harder to inspect)
+      - name: 🔨 Build EXE with PyInstaller
+        working-directory: build_obf
+        shell: powershell
+        run: |
+          # Detect pyarmor runtime package name dynamically
+          $runtime = Get-ChildItem -Filter "pyarmor_runtime*" -Directory | Select-Object -First 1 -ExpandProperty Name
+          Write-Host "PyArmor runtime package: $runtime"
+
+          pyinstaller `
+            --noconfirm `
+            --onedir `
+            --windowed `
+            --name "A1D-Upscaler" `
+            --add-data "config.json;." `
+            --collect-all PySide6 `
+            --collect-all qtawesome `
+            --collect-all playwright `
+            --collect-all google `
+            --collect-all bs4 `
+            --collect-all lxml `
+            --hidden-import App.background_process `
+            --hidden-import App.batch_processor `
+            --hidden-import App.a1d_upscaler `
+            --hidden-import App.gmail_otp `
+            --hidden-import App.firefox_relay `
+            --hidden-import App.config_manager `
+            --hidden-import App.file_processor `
+            --hidden-import App.logger `
+            --hidden-import App.progress_handler `
+            --hidden-import App.temp_cleanup `
+            --hidden-import App.tools_checker `
+            --hidden-import $runtime `
+            --exclude-module tkinter `
+            --exclude-module matplotlib `
+            --exclude-module scipy `
+            --exclude-module notebook `
+            main.py
+
+      # ── 7. Package final ZIP ─────────────────────────────────────────────────
+      - name: 📦 Package Output as ZIP
+        shell: powershell
+        run: |
+          $version = "${{ github.ref_name }}"
+          if (-not $version) { $version = "dev-build" }
+          $zipName = "A1D-Upscaler-${version}-Windows.zip"
+          Write-Host "Creating $zipName ..."
+          Compress-Archive -Path "build_obf\dist\A1D-Upscaler\*" -DestinationPath $zipName
+          Write-Host "Done: $zipName"
+
+      # ── 8. Upload as GitHub Actions Artifact (always available) ─────────────
+      - name: ⬆️ Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: A1D-Upscaler-Windows-EXE
+          path: A1D-Upscaler-*.zip
+          retention-days: 30
+
+      # ── 9. Auto-create GitHub Release if triggered by a version tag ──────────
+      - name: 🚀 Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: A1D-Upscaler-*.zip
+          generate_release_notes: true
+          name: "A1D Upscaler ${{ github.ref_name }}"
