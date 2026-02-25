@@ -21,27 +21,28 @@ QUALITY_TEXTS = {
                "2160", "4K Ultra HD", "4K UHD"],
 }
 
-# Waktu tunggu awal setelah upscale dimulai sebelum mulai polling tombol Download (detik)
-INITIAL_DOWNLOAD_WAIT = 120
-
 
 class A1DProcessor(QThread):
     log_signal      = Signal(str, str)
     progress_signal = Signal(int, str)
     finished_signal = Signal(bool, str, str)
 
-    SIGNIN_URL = "https://a1d.ai/auth/sign-in"
-    EDITOR_URL = "https://a1d.ai/video-upscaler/editor"
+    # URL bisa dioverride via config["a1d_url"]
+    _DEFAULT_BASE = "https://a1d.ai"
 
     def __init__(self, base_dir: str, video_path: str, config: dict):
         super().__init__()
-        self.base_dir    = base_dir
-        self.video_path  = video_path
-        self.config      = config
-        self.page        = None
-        self._pw         = None   # sync_playwright instance
-        self._browser    = None
-        self._cancelled  = False
+        self.base_dir   = base_dir
+        self.video_path = video_path
+        self.config     = config
+        self.page       = None
+        self._pw        = None
+        self._browser   = None
+        self._cancelled = False
+
+        base = self.config.get("a1d_url", self._DEFAULT_BASE).rstrip("/")
+        self.SIGNIN_URL = f"{base}/auth/sign-in"
+        self.EDITOR_URL = f"{base}/video-upscaler/editor"
 
     def cancel(self):    self._cancelled = True
     def log(self, msg, level="INFO"): self.log_signal.emit(msg, level)
@@ -83,8 +84,8 @@ class A1DProcessor(QThread):
         # ─ Launch Playwright Chromium ────────────────────────────────────────────────
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
-            headless        = self.config.get("headless", True),
-            downloads_path  = out_dir,
+            headless       = self.config.get("headless", True),
+            downloads_path = out_dir,
             args = [
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
@@ -94,8 +95,8 @@ class A1DProcessor(QThread):
             ],
         )
         context = self._browser.new_context(
-            viewport        = {"width": 1920, "height": 1080},
-            user_agent      = (
+            viewport         = {"width": 1920, "height": 1080},
+            user_agent       = (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/122.0.0.0 Safari/537.36"
@@ -165,19 +166,23 @@ class A1DProcessor(QThread):
             self._start_upscale()
             self.log("⚙️ Proses upscale dimulai!", "SUCCESS")
 
-            # ─ Tunggu 2 menit sebelum mulai polling tombol Download ────────────────
-            wait_sec = INITIAL_DOWNLOAD_WAIT
-            self.log(f"⏳ Tunggu {wait_sec // 60} menit sebelum cek tombol Download...", "INFO")
-            for remaining in range(wait_sec, 0, -1):
-                if self._cancelled:
-                    raise InterruptedError("Dibatalkan")
-                if remaining % 30 == 0 or remaining <= 10:
-                    self.prog(87, f"⏳ Menunggu server render... {remaining}s")
-                    self.log(f"   └ sisa {remaining}s", "INFO")
-                time.sleep(1)
-            self.log("✅ Initial wait selesai, mulai cek tombol Download", "INFO")
+            # ─ Initial wait — dibaca dari config ────────────────────────────────
+            wait_sec = max(0, int(self.config.get("initial_download_wait", 120)))
+            if wait_sec > 0:
+                mins = wait_sec // 60
+                secs = wait_sec % 60
+                label = f"{mins}m {secs}s" if mins else f"{secs}s"
+                self.log(f"⏳ Tunggu {label} sebelum cek tombol Download...", "INFO")
+                for remaining in range(wait_sec, 0, -1):
+                    if self._cancelled:
+                        raise InterruptedError("Dibatalkan")
+                    if remaining % 30 == 0 or remaining <= 10:
+                        self.prog(87, f"⏳ Menunggu server render... {remaining}s")
+                        self.log(f"   └ sisa {remaining}s", "INFO")
+                    time.sleep(1)
+                self.log("✅ Initial wait selesai, mulai cek tombol Download", "INFO")
 
-            self.prog(88, "Menunggu proses selesai (5-30 menit)...")
+            self.prog(88, "Menunggu proses selesai...")
             out_path = self._wait_and_download(out_dir)
             self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
 
@@ -213,7 +218,6 @@ class A1DProcessor(QThread):
                         return
             except Exception:
                 continue
-        # JS fallback
         filled = self.page.evaluate("""
             (email) => {
                 const inp = Array.from(document.querySelectorAll('input')).find(
@@ -291,7 +295,6 @@ class A1DProcessor(QThread):
                     return
             except Exception:
                 continue
-        # digit-by-digit fallback
         digits = self.page.locator('input[maxlength="1"]').all()
         if len(digits) >= len(otp):
             for i, ch in enumerate(otp):
@@ -372,9 +375,6 @@ class A1DProcessor(QThread):
         q     = quality.lower().strip()
         texts = QUALITY_TEXTS.get(q, QUALITY_TEXTS["4k"])
         self.log(f"📺 Pilih kualitas: {q.upper()}", "INFO")
-
-        # Tunggu quality options muncul
-        self.log("⏳ Tunggu quality options...", "INFO")
         deadline = time.time() + 15
         while time.time() < deadline:
             found = self.page.evaluate("""
@@ -390,11 +390,8 @@ class A1DProcessor(QThread):
                 }
             """, ["4K", "2K", "1080", "quality", "resolution", "UHD", "HD"])
             if found:
-                self.log("✅ Quality options terdeteksi", "INFO")
                 break
             time.sleep(0.5)
-
-        # Coba via role
         for text in texts:
             for role in ["radio", "button"]:
                 try:
@@ -406,14 +403,10 @@ class A1DProcessor(QThread):
                         return
                 except Exception:
                     continue
-
-        # JS fallback
         result = self.page.evaluate("""
             (targets) => {
-                const SELS = [
-                    'button','[role="radio"]','[role="button"]','label',
-                    '[class*="option"],[class*="quality"],[class*="resolution"],[class*="card"],[class*="tab"],[class*="pill"]'
-                ];
+                const SELS = ['button','[role="radio"]','[role="button"]','label',
+                    '[class*="option"],[class*="quality"],[class*="resolution"],[class*="card"],[class*="tab"],[class*="pill"]'];
                 for (const sel of SELS) {
                     for (const el of document.querySelectorAll(sel)) {
                         const r = el.getBoundingClientRect();
@@ -434,12 +427,10 @@ class A1DProcessor(QThread):
                 return 'NOT_FOUND';
             }
         """, texts)
-
         if result and result.startswith("OK|"):
             self.log(f"✅ {q.upper()} (JS): {result}", "SUCCESS")
             time.sleep(0.8)
             return
-
         self.log(f"⚠️ Quality {q.upper()} tidak ditemukan — lanjut", "WARNING")
         self._debug_dump_quality()
 
@@ -471,7 +462,6 @@ class A1DProcessor(QThread):
                     return
             except Exception:
                 continue
-        # JS fallback
         result = self.page.evaluate("""
             () => {
                 for (const b of document.querySelectorAll('button')) {
@@ -501,27 +491,16 @@ class A1DProcessor(QThread):
         return out
 
     def _wait_and_download(self, out_dir: str) -> str:
-        """
-        Tunggu tombol Download muncul lalu download hasilnya.
-
-        [L1] Ambil URL dari atribut tombol (blob/http) → download langsung
-        [L2] Playwright expect_download() — paling reliable untuk file download
-        [L3] Last resort: cek file baru di out_dir setelah klik
-        """
         timeout  = self.config.get("processing_hang_timeout", 1800)
         start    = time.time()
         last_pct = 88
-
         DL_LOCATORS = [
             "//button[normalize-space(.)='Download' or contains(normalize-space(.),'Download')]",
             "//a[contains(normalize-space(.),'Download') or contains(@href,'.mp4')]",
         ]
-
         while time.time() - start < timeout:
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
-
-            # Cari tombol Download
             dl_btn = None
             for xpath in DL_LOCATORS:
                 try:
@@ -531,12 +510,9 @@ class A1DProcessor(QThread):
                         break
                 except Exception:
                     continue
-
             if dl_btn:
                 self.log("✅ Video siap di-download!", "SUCCESS")
                 self.prog(92, "Mendownload video...")
-
-                # ─ L1: URL dari atribut elemen ──────────────────────────────────
                 try:
                     dl_url = self.page.evaluate("""
                         (el) => {
@@ -556,43 +532,34 @@ class A1DProcessor(QThread):
                             return null;
                         }
                     """, dl_btn.element_handle())
-
                     if dl_url:
                         url_type = dl_url.get("type", "")
                         url      = dl_url.get("url", "")
-                        self.log(f"🎯 [L1] {url_type.upper()} URL dari tombol", "INFO")
+                        self.log(f"🎯 [L1] {url_type.upper()} URL", "INFO")
                         if url_type == "http":
                             return self._download_url(url, out_dir)
                         if url_type == "blob":
-                            out_path = self._build_output_path(out_dir)
-                            return self._download_blob_url(url, out_path)
+                            return self._download_blob_url(url, self._build_output_path(out_dir))
                 except Exception as e:
                     self.log(f"⚠️ L1 gagal: {e}", "INFO")
-
-                # ─ L2: Playwright expect_download() — paling reliable ────────
                 self.log("⏳ [L2] Playwright expect_download...", "INFO")
+                dl_timeout_ms = int(self.config.get("download_timeout", 600)) * 1000
                 try:
-                    with self.page.expect_download(timeout=600_000) as dl_info:
+                    with self.page.expect_download(timeout=dl_timeout_ms) as dl_info:
                         dl_btn.click()
                     download: Download = dl_info.value
-                    fname   = download.suggested_filename or "output.mp4"
-                    ext     = os.path.splitext(fname)[1] or ".mp4"
+                    fname    = download.suggested_filename or "output.mp4"
+                    ext      = os.path.splitext(fname)[1] or ".mp4"
                     out_path = self._build_output_path(out_dir, ext=ext)
                     download.save_as(out_path)
                     sz_mb = os.path.getsize(out_path) / 1_048_576
-                    self.log(
-                        f"✅ Download selesai: {os.path.basename(out_path)} ({sz_mb:.1f} MB)",
-                        "SUCCESS"
-                    )
+                    self.log(f"✅ Download selesai: {os.path.basename(out_path)} ({sz_mb:.1f} MB)", "SUCCESS")
                     return out_path
                 except Exception as e:
                     self.log(f"⚠️ L2 gagal: {e}", "WARNING")
-
-                # ─ L3: Klik + pantau file baru di out_dir ──────────────────
-                self.log("⏳ [L3] Klik + pantau file baru...", "INFO")
                 before = set(os.listdir(out_dir))
                 dl_btn.click()
-                for _ in range(60):  # tunggu max 60 detik
+                for _ in range(60):
                     time.sleep(1)
                     new_files = [
                         os.path.join(out_dir, f)
@@ -602,22 +569,18 @@ class A1DProcessor(QThread):
                     if new_files:
                         best = max(new_files, key=os.path.getmtime)
                         if os.path.getsize(best) > 500_000:
-                            self.log(f"✅ [L3] File baru: {os.path.basename(best)}", "SUCCESS")
                             return best
-                raise RuntimeError("❌ Download gagal sepenuhnya")
-
-            # Belum ada tombol Download — update progress
+                raise RuntimeError("❌ Download gagal")
             elapsed = time.time() - start
             pct     = min(91, 88 + int((elapsed / timeout) * 3))
             if pct > last_pct:
                 last_pct = pct
                 self.prog(pct, f"Upscaling... ({int(elapsed / 60)} menit)")
             time.sleep(6)
-
         raise TimeoutError(f"Timeout setelah {timeout // 60} menit")
 
     def _download_blob_url(self, blob_url: str, out_path: str) -> str:
-        self.log("📥 Download blob via JS fetch + FileReader...", "INFO")
+        self.log("📥 Download blob via JS fetch...", "INFO")
         data_url = self.page.evaluate("""
             async (blobUrl) => {
                 const r    = await fetch(blobUrl);
@@ -631,22 +594,19 @@ class A1DProcessor(QThread):
             }
         """, blob_url)
         if not data_url:
-            raise RuntimeError("❌ Gagal konversi blob ke data URL")
+            raise RuntimeError("❌ Gagal konversi blob")
         _, b64 = data_url.split(",", 1)
         data_bytes = base64.b64decode(b64)
         with open(out_path, "wb") as f:
             f.write(data_bytes)
-        size_mb = len(data_bytes) / 1_048_576
-        self.log(
-            f"✅ Blob tersimpan: {os.path.basename(out_path)} ({size_mb:.1f} MB)",
-            "SUCCESS"
-        )
+        self.log(f"✅ Blob tersimpan: {os.path.basename(out_path)} ({len(data_bytes)/1_048_576:.1f} MB)", "SUCCESS")
         return out_path
 
     def _download_url(self, url: str, out_dir: str) -> str:
         out_path = self._build_output_path(out_dir)
         self.log(f"Downloading: {os.path.basename(out_path)}", "INFO")
-        with req.get(url, stream=True, timeout=self.config.get("download_timeout", 600)) as r:
+        timeout = self.config.get("download_timeout", 600)
+        with req.get(url, stream=True, timeout=timeout) as r:
             r.raise_for_status()
             total = int(r.headers.get("content-length", 0))
             done  = 0
@@ -657,13 +617,10 @@ class A1DProcessor(QThread):
                     f.write(chunk)
                     done += len(chunk)
                     if total:
-                        self.prog(
-                            92 + int((done / total) * 8),
-                            f"Download {done // 1_048_576}/{total // 1_048_576} MB"
-                        )
+                        self.prog(92 + int((done / total) * 8),
+                                  f"Download {done//1_048_576}/{total//1_048_576} MB")
         return out_path
 
-    # ══ CLEANUP ═══════════════════════════════════════════════════════════════════════
     def _quit_browser(self):
         for obj, attr in [(self, "_browser"), (self, "_pw")]:
             try:
