@@ -23,6 +23,8 @@ QUALITY_TEXTS = {
                "2160", "4K Ultra HD", "4K UHD"],
 }
 
+MAX_OTP_RETRIES = 3   # total percobaan OTP (1 awal + 2 retry)
+
 
 class A1DProcessor(QThread):
     log_signal      = Signal(str, str)
@@ -86,11 +88,6 @@ class A1DProcessor(QThread):
             clean_temp_files(self._out_dir, log_fn=self.log)
 
     def _quit_browser(self):
-        """
-        Close Playwright + Chromium in a daemon thread so the worker’s run()
-        does not block forever if browser.close() hangs.
-        Waits up to 8 s for the thread to finish before giving up.
-        """
         browser, pw = self._browser, self._pw
         self._browser = None
         self._pw      = None
@@ -108,7 +105,7 @@ class A1DProcessor(QThread):
 
         t = threading.Thread(target=_do_close, daemon=True, name="pw-close")
         t.start()
-        t.join(timeout=8)   # after 8 s, abandon (daemon dies on process exit)
+        t.join(timeout=8)
 
     # ══ CORE PROCESS ═══════════════════════════════════════════════════════════
     def _process(self) -> str:
@@ -185,23 +182,63 @@ class A1DProcessor(QThread):
         self._wait_for_otp_form(timeout=30)
         self.log("✅ Form OTP terdeteksi", "SUCCESS")
 
-        self.prog(38, "Menunggu OTP dari Gmail...")
+        # ────────────────────────────────────────────────────────
+        # OTP retry loop
+        #   Percobaan 1: pakai OTP dari email pertama
+        #   Percobaan 2+: klik Resend (jika ada) ATAU restart sign-in,
+        #                 bersihkan kolom, tunggu OTP baru, isi ulang
+        # ────────────────────────────────────────────────────────
         gmail = GmailOTPReader(self.base_dir)
-        otp = gmail.wait_for_otp(
-            sender          = "a1d.ai",
-            mask_email      = email,
-            after_timestamp = otp_request_time,
-            timeout         = 180,
-            interval        = 5,
-            log_callback    = lambda m, lv="INFO": self.log(f"[Gmail] {m}", lv),
-        )
-        self.log(f"✅ OTP: {otp}", "SUCCESS")
 
-        self.prog(50, "Memasukkan OTP...")
-        self._fill_otp(otp)
-        self.prog(58, "Submit OTP...")
-        if not self._click_otp_submit_and_verify():
-            raise RuntimeError("❌ OTP salah/kadaluarsa")
+        for attempt in range(1, MAX_OTP_RETRIES + 1):
+            if self._cancelled:
+                raise InterruptedError("Dibatalkan")
+
+            if attempt > 1:
+                self.log(
+                    f"⚠️ OTP gagal/salah — percobaan {attempt}/{MAX_OTP_RETRIES}...",
+                    "WARNING",
+                )
+                # Coba klik Resend dulu; jika tidak ada, restart full sign-in
+                if self._try_resend_otp():
+                    self.log("🔄 Resend OTP berhasil diklik", "INFO")
+                else:
+                    self.log(
+                        "🔄 Tombol Resend tidak ditemukan — kembali ke halaman sign-in",
+                        "INFO",
+                    )
+                    self._restart_signin(email)
+                # Timestamp SETELAH trigger OTP baru agar Gmail reader
+                # hanya ambil email yang masuk setelah ini
+                otp_request_time = int(time.time())
+
+            self.prog(
+                38,
+                f"Menunggu OTP dari Gmail... (percobaan {attempt}/{MAX_OTP_RETRIES})",
+            )
+            otp = gmail.wait_for_otp(
+                sender          = "a1d.ai",
+                mask_email      = email,
+                after_timestamp = otp_request_time,
+                timeout         = 180,
+                interval        = 5,
+                log_callback    = lambda m, lv="INFO": self.log(f"[Gmail] {m}", lv),
+            )
+            self.log(f"✅ OTP percobaan {attempt}: {otp}", "SUCCESS")
+
+            self.prog(50, f"Memasukkan OTP (percobaan {attempt})...")
+            self._clear_otp_inputs()   # ← bersihkan sisa OTP gagal sebelumnya
+            self._fill_otp(otp)
+
+            self.prog(58, "Submit OTP...")
+            if self._click_otp_submit_and_verify():
+                break   # ✔ login berhasil, lanjut
+
+            if attempt >= MAX_OTP_RETRIES:
+                raise RuntimeError(
+                    f"❌ OTP gagal setelah {MAX_OTP_RETRIES} percobaan"
+                )
+        # ── end OTP retry loop ───────────────────────────────────────────────────
         time.sleep(2)
 
         self.prog(65, "Menunggu login berhasil...")
@@ -326,6 +363,97 @@ class A1DProcessor(QThread):
                     continue
             time.sleep(0.8)
         raise TimeoutError("❌ Form OTP tidak muncul")
+
+    def _clear_otp_inputs(self):
+        """
+        Bersihkan semua kolom input OTP sebelum mengisi OTP baru.
+        Dipanggil pada percobaan ke-2 dan seterusnya.
+        """
+        OTP_SELS = [
+            'input[autocomplete="one-time-code"]',
+            'input[inputmode="numeric"]',
+            'input[type="number"][maxlength="6"]',
+            'input[type="text"][maxlength="6"]',
+            'input[placeholder*="code" i]',
+        ]
+        for sel in OTP_SELS:
+            try:
+                loc = self.page.locator(sel).first
+                if loc.is_visible(timeout=500):
+                    loc.fill("")
+                    self.log("🧹 Input OTP dibersihkan", "INFO")
+                    return
+            except Exception:
+                continue
+        # Digit-by-digit inputs (maxlength="1")
+        try:
+            digits = self.page.locator('input[maxlength="1"]').all()
+            for d in digits:
+                try:
+                    d.fill("")
+                except Exception:
+                    pass
+            if digits:
+                self.log(f"🧹 {len(digits)} kolom OTP digit dibersihkan", "INFO")
+        except Exception:
+            pass
+
+    def _try_resend_otp(self) -> bool:
+        """
+        Coba klik tombol/link Resend OTP di halaman OTP.
+        Return True jika berhasil diklik, False jika tidak ditemukan.
+        """
+        RESEND_TEXTS = [
+            "resend", "resend otp", "resend code", "resend email",
+            "send again", "send new code", "resend verification",
+            "kirim ulang", "kirim ulang kode",
+        ]
+        for role in ["button", "link"]:
+            for text in RESEND_TEXTS:
+                try:
+                    el = self.page.get_by_role(role, name=text, exact=False)
+                    if el.first.is_visible(timeout=1_000):
+                        el.first.click()
+                        time.sleep(2)
+                        self.log(f"🔄 Resend via {role}: '{text}'", "INFO")
+                        return True
+                except Exception:
+                    continue
+        # JS fallback: cari elemen yang teksnya mengandung 'resend'
+        clicked = self.page.evaluate("""
+            () => {
+                const kw = ['resend','send again','kirim ulang'];
+                for (const el of document.querySelectorAll('button,a,[role="button"]')) {
+                    const t = el.textContent.trim().toLowerCase();
+                    if (kw.some(k => t.includes(k))) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) {
+                            el.click();
+                            return el.textContent.trim();
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+        if clicked:
+            time.sleep(2)
+            self.log(f"🔄 Resend via JS: '{clicked}'", "INFO")
+            return True
+        return False
+
+    def _restart_signin(self, email: str):
+        """
+        Kembali ke halaman sign-in, isi ulang email,
+        dan tunggu sampai form OTP muncul kembali.
+        """
+        self.log(f"🔄 Restart sign-in: {self.SIGNIN_URL}", "INFO")
+        self.page.goto(self.SIGNIN_URL, wait_until="domcontentloaded")
+        time.sleep(2.5)
+        self._fill_email(email)
+        self._click_submit()
+        self._wait_for_otp_form(timeout=30)
+        self.log("✅ Form OTP siap (setelah restart sign-in)", "SUCCESS")
 
     def _fill_otp(self, otp: str):
         OTP_SELS = [
@@ -528,7 +656,7 @@ class A1DProcessor(QThread):
         if result and result.startswith("clicked:"):
             self.log(f"✅ Upscale (JS): {result}", "INFO")
 
-    # ══ WAIT & DOWNLOAD ══════════════════════════════════════════════════════════
+    # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
