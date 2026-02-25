@@ -64,8 +64,10 @@ class A1DProcessor(QThread):
             self.finished_signal.emit(False, str(e), "")
         finally:
             self._cleanup_mask()
-            self._cleanup_temp_files()   # ← bersihkan .tmp/.crdownload dari out_dir
+            # ✔ quit_browser FIRST (waits up to 8 s for Chromium to release
+            #   all file handles), THEN clean .tmp so files are not locked.
             self._quit_browser()
+            self._cleanup_temp_files()
 
     def _cleanup_mask(self):
         if self._relay and self._mask_id:
@@ -79,14 +81,15 @@ class A1DProcessor(QThread):
                 self._mask_id = None
 
     def _cleanup_temp_files(self):
-        """Delete leftover .tmp / .crdownload files from the output directory."""
+        """Delete leftover .tmp / .crdownload from the output directory."""
         if self._out_dir:
             clean_temp_files(self._out_dir, log_fn=self.log)
 
     def _quit_browser(self):
         """
-        Close Playwright + Chromium in a daemon thread so the worker's run()
-        returns immediately without waiting for a potentially-hanging browser.close().
+        Close Playwright + Chromium in a daemon thread so the worker’s run()
+        does not block forever if browser.close() hangs.
+        Waits up to 8 s for the thread to finish before giving up.
         """
         browser, pw = self._browser, self._pw
         self._browser = None
@@ -105,7 +108,7 @@ class A1DProcessor(QThread):
 
         t = threading.Thread(target=_do_close, daemon=True, name="pw-close")
         t.start()
-        t.join(timeout=8)
+        t.join(timeout=8)   # after 8 s, abandon (daemon dies on process exit)
 
     # ══ CORE PROCESS ═══════════════════════════════════════════════════════════
     def _process(self) -> str:
@@ -130,10 +133,10 @@ class A1DProcessor(QThread):
                   else os.path.join(os.path.dirname(self.video_path), "OUTPUT")
         out_dir = os.path.normpath(os.path.abspath(raw_dir))
         os.makedirs(out_dir, exist_ok=True)
-        self._out_dir = out_dir   # ← simpan agar cleanup bisa pakai
+        self._out_dir = out_dir
         self.log(f"📁 Output: {out_dir}", "INFO")
 
-        # Clean up leftover temp files from any previous failed runs
+        # Clean leftover temp files from any previous failed run
         prev = clean_temp_files(out_dir)
         if prev:
             self.log(f"🧹 Hapus {prev} file temp sisa dari run sebelumnya", "INFO")
