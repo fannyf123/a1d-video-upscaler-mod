@@ -10,7 +10,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from PySide6.QtCore import QThread, Signal
 
 from App.firefox_relay import FirefoxRelay
@@ -129,6 +130,13 @@ class A1DProcessor(QThread):
             self._register(wait, email, password)
             self.log(f"Register dengan email: {email}", "INFO")
 
+            # Step 3b: Tunggu form OTP muncul di halaman SEBELUM polling Gmail
+            # FIX: Tanpa ini, _input_otp dipanggil saat halaman belum siap
+            self.prog(25, "Menunggu form OTP muncul di halaman...")
+            self.log("⏳ Menunggu form OTP di halaman...", "INFO")
+            self._wait_for_otp_form(timeout=30)
+            self.log("✅ Form OTP terdeteksi di halaman", "SUCCESS")
+
             # Step 4: Baca OTP dari Gmail — dengan live log callback
             self.prog(30, "Menunggu OTP dari Gmail...")
             self.log("─" * 40, "INFO")
@@ -138,7 +146,6 @@ class A1DProcessor(QThread):
 
             gmail = GmailOTPReader(self.base_dir)
 
-            # Kirim log callback ke UI secara real-time
             def _gmail_log(msg: str, level: str):
                 self.log(f"   [Gmail] {msg}", level)
                 if "berlalu" in msg:
@@ -146,17 +153,23 @@ class A1DProcessor(QThread):
 
             otp = gmail.wait_for_otp(
                 sender="a1d.ai",
-                timeout=180,       # 3 menit — lebih dari cukup
-                interval=5,        # polling tiap 5 detik
+                timeout=180,
+                interval=5,
                 log_callback=_gmail_log
             )
 
             self.log(f"✅ OTP diterima: {otp}", "SUCCESS")
 
-            # Step 5: Verifikasi OTP
-            self.prog(40, "Verifikasi OTP...")
+            # Step 5: Masukkan OTP ke halaman
+            self.prog(40, "Memasukkan OTP ke halaman...")
             self._input_otp(wait, otp)
-            time.sleep(3)
+
+            # Step 5b: Submit OTP dan verifikasi redirect
+            self.prog(45, "Submit & verifikasi OTP...")
+            success = self._click_otp_submit_and_verify(wait)
+            if not success:
+                raise RuntimeError("❌ OTP salah atau kadaluarsa — submit OTP gagal setelah 3x percobaan")
+            time.sleep(2)
 
             # Step 6: Upload video
             self.prog(50, "Mengupload video...")
@@ -182,7 +195,6 @@ class A1DProcessor(QThread):
             self.log(f"Video tersimpan di: {out_path}", "SUCCESS")
 
         finally:
-            # Selalu hapus email mask setelah selesai
             try:
                 relay.delete_mask(mask_id)
                 self.log("Email mask dihapus", "INFO")
@@ -226,31 +238,166 @@ class A1DProcessor(QThread):
         )))
         submit.click()
 
-    def _input_otp(self, wait: WebDriverWait, otp: str):
-        try:
-            boxes = self.driver.find_elements(By.XPATH, "//input[@maxlength='1']")
-            if len(boxes) >= 6:
-                for i, digit in enumerate(otp[:6]):
-                    boxes[i].clear()
-                    boxes[i].send_keys(digit)
-            else:
-                otp_inp = wait.until(EC.presence_of_element_located((
-                    By.XPATH,
-                    "//input[contains(@name,'otp') or contains(@name,'code') or contains(@placeholder,'code')]"
-                )))
-                otp_inp.clear()
-                otp_inp.send_keys(otp)
+    def _wait_for_otp_form(self, timeout: int = 30):
+        """
+        FIX: Tunggu sampai form OTP benar-benar muncul di halaman.
+        Ini adalah langkah krusial yang hilang di versi sebelumnya —
+        tanpa ini, _input_otp dipanggil saat halaman belum menampilkan
+        form OTP sehingga OTP tidak bisa dimasukkan.
+        Ported dari a1d-auto-upscaler/core.py _wait_for_otp_form()
+        """
+        deadline = time.time() + timeout
+        OTP_SELS = [
+            'input[autocomplete="one-time-code"]',
+            'input[inputmode="numeric"]',
+            'input[type="number"][maxlength="6"]',
+            'input[type="text"][maxlength="6"]',
+            'input[maxlength="1"]',
+            'input[placeholder*="code" i]',
+            'input[name*="code" i]',
+            'input[name*="otp" i]',
+        ]
+        while time.time() < deadline:
+            if self._cancelled:
+                raise InterruptedError("Proses dibatalkan")
+            for sel in OTP_SELS:
+                try:
+                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
+                    if el.is_displayed():
+                        return
+                except NoSuchElementException:
+                    continue
+            time.sleep(0.8)
+        self.log("⚠️ Form OTP tidak terdeteksi dalam timeout — lanjut tetap", "WARNING")
 
+    def _input_otp(self, wait: WebDriverWait, otp: str):
+        """
+        FIX: Gunakan CSS selectors lengkap dari a1d-auto-upscaler/core.py
+        untuk mencari dan mengisi field OTP.
+        Urutan prioritas:
+          1. CSS selectors spesifik OTP (one-time-code, numeric, dsb)
+          2. Individual digit boxes (maxlength=1)
+          3. XPATH fallback
+        Submit sekarang dipisah ke _click_otp_submit_and_verify().
+        """
+        driver = self.driver
+        OTP_SELS = [
+            'input[autocomplete="one-time-code"]',
+            'input[inputmode="numeric"]',
+            'input[type="number"][maxlength="6"]',
+            'input[type="text"][maxlength="6"]',
+            'input[placeholder*="code" i]',
+            'input[name*="code" i]',
+            'input[name*="otp" i]',
+        ]
+        for sel in OTP_SELS:
             try:
-                verify_btn = wait.until(EC.element_to_be_clickable((
-                    By.XPATH,
-                    "//button[contains(.,'Verify') or contains(.,'Confirm') or @type='submit']"
-                )))
-                verify_btn.click()
-            except Exception:
-                pass
+                f = driver.find_element(By.CSS_SELECTOR, sel)
+                if f.is_displayed():
+                    f.click()
+                    f.clear()
+                    f.send_keys(otp)
+                    self.log(f"OTP dimasukkan via CSS: {sel}", "INFO")
+                    return
+            except NoSuchElementException:
+                continue
+
+        # Fallback: individual digit boxes (maxlength="1")
+        digits = driver.find_elements(By.CSS_SELECTOR, 'input[maxlength="1"]')
+        if len(digits) >= len(otp):
+            for i, ch in enumerate(otp):
+                digits[i].click()
+                digits[i].send_keys(ch)
+                time.sleep(0.08)
+            self.log(f"OTP dimasukkan via {len(digits)} digit boxes", "INFO")
+            return
+
+        # Fallback XPATH
+        try:
+            otp_inp = wait.until(EC.presence_of_element_located((
+                By.XPATH,
+                "//input[contains(@name,'otp') or contains(@name,'code') or contains(@placeholder,'code')]"
+            )))
+            otp_inp.clear()
+            otp_inp.send_keys(otp)
+            self.log("OTP dimasukkan via XPATH fallback", "INFO")
         except Exception as e:
-            self.log(f"OTP input warning: {e}", "WARNING")
+            raise RuntimeError(f"❌ Input OTP tidak ditemukan di halaman: {e}")
+
+    def _click_otp_submit_and_verify(self, wait: WebDriverWait, max_retries: int = 3) -> bool:
+        """
+        FIX: Submit OTP dan verifikasi redirect ke home/dashboard.
+        Dipisah dari _input_otp agar bisa retry jika gagal.
+        Ported dari a1d-auto-upscaler/core.py _click_otp_submit_and_verify()
+        """
+        driver = self.driver
+        SUBMIT_XPATHS = [
+            "//button[@type='submit']",
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'verify')]",
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'confirm')]",
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'continue')]",
+        ]
+        for attempt in range(1, max_retries + 1):
+            if self._cancelled:
+                raise InterruptedError("Proses dibatalkan")
+
+            clicked = False
+            for xpath in SUBMIT_XPATHS:
+                try:
+                    btn = driver.find_element(By.XPATH, xpath)
+                    if btn.is_displayed():
+                        btn.click()
+                        self.log(f"🔘 OTP submit percobaan {attempt}", "INFO")
+                        clicked = True
+                        break
+                except NoSuchElementException:
+                    continue
+
+            # Fallback: Enter key di field OTP
+            if not clicked:
+                try:
+                    f = driver.find_element(
+                        By.CSS_SELECTOR, 'input[autocomplete="one-time-code"]'
+                    )
+                    f.send_keys(Keys.RETURN)
+                    clicked = True
+                except Exception:
+                    pass
+
+            if not clicked:
+                self.log("⚠️ Tidak ada tombol submit OTP ditemukan", "WARNING")
+                return False
+
+            time.sleep(2.5)
+
+            # Cek redirect ke home/dashboard
+            url = driver.current_url
+            if any(p in url for p in ["/home", "dashboard", "/video-upscaler", "/editor"]):
+                self.log("✅ OTP diterima — redirect berhasil", "SUCCESS")
+                return True
+
+            # Cek apakah form OTP sudah hilang (artinya berhasil)
+            otp_gone = True
+            for sel in [
+                'input[autocomplete="one-time-code"]',
+                'input[inputmode="numeric"]',
+                'input[maxlength="1"]',
+            ]:
+                try:
+                    if driver.find_element(By.CSS_SELECTOR, sel).is_displayed():
+                        otp_gone = False
+                        break
+                except NoSuchElementException:
+                    continue
+            if otp_gone:
+                self.log("✅ OTP berhasil — form OTP sudah hilang", "SUCCESS")
+                return True
+
+            self.log(f"⏳ Menunggu respons OTP... (percobaan {attempt})", "INFO")
+            time.sleep(2)
+
+        url = driver.current_url
+        return any(p in url for p in ["/home", "dashboard", "/video-upscaler", "/editor"])
 
     def _upload_video(self, wait: WebDriverWait):
         abs_path = os.path.abspath(self.video_path)
