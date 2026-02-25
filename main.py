@@ -29,7 +29,7 @@ from App.batch_processor import BatchProcessor, MAX_PARALLEL_LIMIT, DEFAULT_WORK
 
 CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
 APP_NAME    = "A1D Video Upscaler"
-APP_VER     = "2.3.0"
+APP_VER     = "2.3.1"
 
 # ══ THEME CONFIGURATION ══════════════════════════════════════════════════════
 C = {
@@ -48,9 +48,20 @@ C = {
     "error":     "#EF4444",
 }
 
+# ────────────────────────────────────────────────────────────────────────────────
+# FIX LOG:
+#   1. Removed global wildcard font selector `* { ... }` which caused font size calculation errors.
+#      Instead, we set the font at the application level in `if __name__ == "__main__":`.
+#   2. Explicitly target QWidget for generic properties instead of `*`.
+# ────────────────────────────────────────────────────────────────────────────────
+
 MODERN_STYLES = f"""
-/* GLOBAL */
-* {{ font-family: 'Inter', 'Segoe UI', sans-serif; font-size: 13px; color: {C['text']}; }}
+/* GLOBAL WIDGET DEFAULTS */
+QWidget {{
+    color: {C['text']};
+    outline: none;
+}}
+
 QMainWindow, QWidget#MainContent {{ background-color: {C['bg']}; }}
 QWidget#Sidebar {{ background-color: {C['sidebar']}; border-right: 1px solid {C['border']}; }}
 
@@ -139,7 +150,8 @@ QProgressBar {{
     border-radius: 8px;
     min-height: 14px;
     max-height: 14px;
-    color: transparent;
+    text-align: center;
+    color: transparent; /* Hide text properly */
 }}
 QProgressBar::chunk {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {C['primary']}, stop:1 {C['accent']});
@@ -719,6 +731,14 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VER)
+    
+    # ══ FIX: Set App Font Explicitly ══
+    font = QFont("Inter", 10)
+    font.setStyleHint(QFont.SansSerif)
+    app.setFont(font)
+    
     app.setStyleSheet(MODERN_STYLES)
     win = MainWindow()
     win.show()
