@@ -130,18 +130,23 @@ class A1DProcessor(QThread):
             self._register(wait, email, password)
             self.log(f"Register dengan email: {email}", "INFO")
 
+            # FIX: Catat timestamp SETELAH register dikirim
+            # Ini dipakai untuk filter email agar hanya baca email BARU
+            otp_request_time = int(time.time())
+            self.log(f"Timestamp registrasi: {time.strftime('%H:%M:%S', time.localtime(otp_request_time))}", "INFO")
+
             # Step 3b: Tunggu form OTP muncul di halaman SEBELUM polling Gmail
-            # FIX: Tanpa ini, _input_otp dipanggil saat halaman belum siap
             self.prog(25, "Menunggu form OTP muncul di halaman...")
             self.log("⏳ Menunggu form OTP di halaman...", "INFO")
             self._wait_for_otp_form(timeout=30)
             self.log("✅ Form OTP terdeteksi di halaman", "SUCCESS")
 
-            # Step 4: Baca OTP dari Gmail — dengan live log callback
+            # Step 4: Baca OTP dari Gmail
             self.prog(30, "Menunggu OTP dari Gmail...")
             self.log("─" * 40, "INFO")
             self.log("📬 Membaca OTP dari Gmail...", "INFO")
-            self.log(f"   Cek email yang diteruskan Firefox Relay ke Gmail Anda", "INFO")
+            self.log(f"   Mask: {email}", "INFO")
+            self.log(f"   Hanya email SETELAH: {time.strftime('%H:%M:%S', time.localtime(otp_request_time))}", "INFO")
             self.log("─" * 40, "INFO")
 
             gmail = GmailOTPReader(self.base_dir)
@@ -153,6 +158,8 @@ class A1DProcessor(QThread):
 
             otp = gmail.wait_for_otp(
                 sender="a1d.ai",
+                mask_email=email,               # FIX: hanya baca email ke mask ini
+                after_timestamp=otp_request_time,  # FIX: abaikan email sebelum register
                 timeout=180,
                 interval=5,
                 log_callback=_gmail_log
@@ -240,11 +247,8 @@ class A1DProcessor(QThread):
 
     def _wait_for_otp_form(self, timeout: int = 30):
         """
-        FIX: Tunggu sampai form OTP benar-benar muncul di halaman.
-        Ini adalah langkah krusial yang hilang di versi sebelumnya —
-        tanpa ini, _input_otp dipanggil saat halaman belum menampilkan
-        form OTP sehingga OTP tidak bisa dimasukkan.
-        Ported dari a1d-auto-upscaler/core.py _wait_for_otp_form()
+        Tunggu sampai form OTP benar-benar muncul di halaman.
+        Langkah krusial sebelum polling Gmail.
         """
         deadline = time.time() + timeout
         OTP_SELS = [
@@ -272,13 +276,7 @@ class A1DProcessor(QThread):
 
     def _input_otp(self, wait: WebDriverWait, otp: str):
         """
-        FIX: Gunakan CSS selectors lengkap dari a1d-auto-upscaler/core.py
-        untuk mencari dan mengisi field OTP.
-        Urutan prioritas:
-          1. CSS selectors spesifik OTP (one-time-code, numeric, dsb)
-          2. Individual digit boxes (maxlength=1)
-          3. XPATH fallback
-        Submit sekarang dipisah ke _click_otp_submit_and_verify().
+        Isi field OTP di halaman menggunakan CSS selectors lengkap.
         """
         driver = self.driver
         OTP_SELS = [
@@ -326,9 +324,8 @@ class A1DProcessor(QThread):
 
     def _click_otp_submit_and_verify(self, wait: WebDriverWait, max_retries: int = 3) -> bool:
         """
-        FIX: Submit OTP dan verifikasi redirect ke home/dashboard.
-        Dipisah dari _input_otp agar bisa retry jika gagal.
-        Ported dari a1d-auto-upscaler/core.py _click_otp_submit_and_verify()
+        Submit OTP dan verifikasi redirect ke home/dashboard.
+        Dengan retry dan fallback Enter key.
         """
         driver = self.driver
         SUBMIT_XPATHS = [
@@ -353,7 +350,6 @@ class A1DProcessor(QThread):
                 except NoSuchElementException:
                     continue
 
-            # Fallback: Enter key di field OTP
             if not clicked:
                 try:
                     f = driver.find_element(
@@ -370,13 +366,11 @@ class A1DProcessor(QThread):
 
             time.sleep(2.5)
 
-            # Cek redirect ke home/dashboard
             url = driver.current_url
             if any(p in url for p in ["/home", "dashboard", "/video-upscaler", "/editor"]):
                 self.log("✅ OTP diterima — redirect berhasil", "SUCCESS")
                 return True
 
-            # Cek apakah form OTP sudah hilang (artinya berhasil)
             otp_gone = True
             for sel in [
                 'input[autocomplete="one-time-code"]',

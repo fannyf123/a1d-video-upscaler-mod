@@ -12,26 +12,35 @@ from googleapiclient.discovery import build
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.modify"]
 
-# ─── Daftar query yang dicoba berurutan ────────────────────────────────────────
-# Firefox Relay mem-forward email dengan menjaga original sender,
-# tapi kadang header bisa berubah. Kita coba semua kemungkinan.
-_SEARCH_QUERIES = [
-    "from:a1d.ai is:unread",
-    "from:noreply@a1d.ai is:unread",
-    "from:no-reply@a1d.ai is:unread",
-    "from:support@a1d.ai is:unread",
-    # Kalau sender berubah karena relay, cari dari subject/keyword
-    "subject:verify is:unread",
-    "subject:verification is:unread",
-    "subject:OTP is:unread",
-    "subject:code is:unread",
-    "subject:a1d is:unread",
-    # Paling broad: semua unread terbaru yang ada angka 6 digit
-    "is:unread newer_than:10m",
+# ─── Subject yang DIABAIKAN (bukan email OTP) ──────────────────────────────────
+# FIX: Welcome email, newsletter, dll tidak boleh dibaca sebagai OTP
+_IGNORE_SUBJECTS = [
+    "welcome",
+    "let's get started",
+    "lets get started",
+    "get started",
+    "newsletter",
+    "subscription",
+    "announcement",
+    "thank you for joining",
+    "account created",
+    "free trial",
+    "upgrade",
+    "invite",
+    "tips",
 ]
 
-# Window waktu pencarian (menit) - lebih lebar dari sebelumnya
-_NEWER_THAN = "15m"
+# ─── Subject yang WAJIB ADA di email OTP ──────────────────────────────────────
+_OTP_SUBJECTS = [
+    "confirm",
+    "verify",
+    "verification",
+    "code",
+    "otp",
+    "sign in",
+    "one-time",
+    "a1d.ai signup",
+]
 
 
 class GmailOTPReader:
@@ -40,8 +49,10 @@ class GmailOTPReader:
     Butuh file credentials.json dari Google Cloud Console.
 
     Fitur:
-    - Multi-query fallback (tidak hanya from:a1d.ai)
-    - Window pencarian lebih lebar (15 menit)
+    - Filter by mask_email: hanya baca email yang dikirim ke mask tertentu
+    - Filter by after_timestamp: abaikan email sebelum registrasi dikirim
+    - Ignore subjects: skip Welcome, newsletter, dll
+    - Multi-query fallback
     - Live countdown callback ke UI
     - Recursive MIME body extraction
     - Auto-mark as read setelah OTP ditemukan
@@ -65,7 +76,7 @@ class GmailOTPReader:
                 try:
                     creds.refresh(Request())
                 except Exception:
-                    creds = None  # Force re-auth jika refresh gagal
+                    creds = None
 
             if not creds or not creds.valid:
                 if not os.path.exists(self.creds_path):
@@ -94,15 +105,19 @@ class GmailOTPReader:
         timeout: int = 180,
         interval: int = 5,
         log_callback: Optional[Callable[[str, str], None]] = None,
+        mask_email: Optional[str] = None,
+        after_timestamp: int = 0,
     ) -> str:
         """
         Poll Gmail sampai OTP ditemukan.
 
         Args:
-            sender:       Hint sender (dipakai di query pertama)
-            timeout:      Batas waktu tunggu (detik)
-            interval:     Jeda antar polling (detik)
-            log_callback: Fungsi (msg, level) untuk kirim log ke UI
+            sender:          Hint sender (dipakai di query)
+            timeout:         Batas waktu tunggu (detik)
+            interval:        Jeda antar polling (detik)
+            log_callback:    Fungsi (msg, level) untuk kirim log ke UI
+            mask_email:      Email mask Firefox Relay — HANYA baca email ke mask ini
+            after_timestamp: Unix timestamp registrasi — abaikan email sebelum waktu ini
 
         Returns:
             String OTP 6 digit
@@ -114,43 +129,63 @@ class GmailOTPReader:
             if log_callback:
                 log_callback(msg, level)
 
-        svc   = self._svc()
-        start = time.time()
+        svc     = self._svc()
+        start   = time.time()
         attempt = 0
 
+        # Cutoff: hanya terima email yang datang SETELAH registrasi
+        # Beri toleransi -30 detik untuk clock skew
+        cutoff_ts = max(0, after_timestamp - 30) if after_timestamp > 0 else 0
+
         _log(f"Memulai polling Gmail (timeout: {timeout}s, interval: {interval}s)", "INFO")
+        if mask_email:
+            _log(f"Filter mask: [{mask_email}]", "INFO")
+        if cutoff_ts > 0:
+            import datetime
+            _log(f"Hanya email setelah: {datetime.datetime.fromtimestamp(cutoff_ts).strftime('%H:%M:%S')}", "INFO")
         _log("Menunggu email OTP dari a1d.ai...", "INFO")
 
-        # Bangun daftar query: prioritaskan berdasarkan sender hint
-        queries = [
-            f"from:{sender} is:unread",
-            f"from:noreply@{sender} is:unread",
-            f"from:no-reply@{sender} is:unread",
-        ]
-        # Tambahkan sisa query fallback (hindari duplikat)
-        for q in _SEARCH_QUERIES:
-            if q not in queries:
-                queries.append(q)
+        # ── Bangun daftar query (prioritas: mask_email dulu) ──────────────────
+        queries = []
+
+        # PRIORITAS 1: Filter by mask_email (paling spesifik)
+        if mask_email:
+            queries.append(f"to:{mask_email} is:unread")
+            queries.append(f"to:{mask_email}")  # fallback tanpa is:unread
+
+        # PRIORITAS 2: Filter by sender
+        queries.append(f"from:{sender} is:unread subject:confirm")
+        queries.append(f"from:{sender} is:unread subject:verify")
+        queries.append(f"from:{sender} is:unread subject:code")
+        queries.append(f"from:{sender} is:unread")
+        queries.append(f"from:noreply@{sender} is:unread")
+        queries.append(f"from:no-reply@{sender} is:unread")
+
+        # PRIORITAS 3: Subject-based fallback
+        queries.append("subject:\"Confirm Your A1D\" is:unread")
+        queries.append("subject:\"verification code\" is:unread")
+        queries.append("subject:\"Your code\" is:unread")
+
+        seen_ids: set = set()
 
         while time.time() - start < timeout:
-            if attempt > 0 and attempt % 5 == 0:  # Log setiap 5 attempt
-                elapsed  = int(time.time() - start)
+            if attempt > 0 and attempt % 5 == 0:
+                elapsed   = int(time.time() - start)
                 remaining = timeout - elapsed
                 _log(f"Menunggu OTP... ({elapsed}s berlalu, sisa {remaining}s)", "INFO")
 
             attempt += 1
 
-            # Coba setiap query
             for query in queries:
-                # Tambahkan filter waktu ke query
-                full_query = f"{query} newer_than:{_NEWER_THAN}"
                 try:
-                    otp = self._search_and_extract(svc, full_query, log_callback)
+                    otp = self._search_and_extract(
+                        svc, query, cutoff_ts, seen_ids, log_callback
+                    )
                     if otp:
                         _log(f"OTP ditemukan via query: [{query}]", "SUCCESS")
                         return otp
                 except Exception as e:
-                    _log(f"Query error [{query}]: {e}", "WARNING")
+                    _log(f"Query error [{query[:50]}]: {e}", "WARNING")
                     continue
 
             time.sleep(interval)
@@ -165,16 +200,55 @@ class GmailOTPReader:
         )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+    def _get_message_timestamp(self, msg: dict) -> int:
+        """Ambil timestamp email (Unix seconds) dari internalDate."""
+        try:
+            return int(msg.get("internalDate", 0)) // 1000
+        except Exception:
+            return 0
+
+    def _is_ignore_subject(self, subject: str) -> bool:
+        """
+        FIX: Cek apakah subject email harus diabaikan.
+        Welcome email, newsletter, dll tidak boleh dibaca sebagai OTP.
+        """
+        subj_lower = subject.lower()
+        for ignore in _IGNORE_SUBJECTS:
+            if ignore in subj_lower:
+                return True
+        return False
+
+    def _is_otp_subject(self, subject: str) -> bool:
+        """
+        Cek apakah subject email kemungkinan berisi OTP.
+        Tidak wajib — hanya untuk prioritas.
+        """
+        subj_lower = subject.lower()
+        for keyword in _OTP_SUBJECTS:
+            if keyword in subj_lower:
+                return True
+        return False
+
     def _search_and_extract(
         self,
         svc,
         query: str,
+        cutoff_ts: int,
+        seen_ids: set,
         log_callback: Optional[Callable] = None,
     ) -> str:
         """Jalankan satu query Gmail dan cari OTP di hasilnya."""
+        def _log(msg: str, level: str = "INFO"):
+            if log_callback:
+                log_callback(msg, level)
+
+        # Selalu tambahkan newer_than agar tidak scan email lama
+        newer_val = "15m" if cutoff_ts <= 0 else "30m"
+        full_query = f"{query} newer_than:{newer_val}"
+
         results = svc.users().messages().list(
             userId="me",
-            q=query,
+            q=full_query,
             maxResults=10
         ).execute()
 
@@ -183,32 +257,63 @@ class GmailOTPReader:
             return ""
 
         for ref in messages:
-            msg  = svc.users().messages().get(
+            msg_id = ref["id"]
+
+            # Skip jika sudah pernah diperiksa di iterasi sebelumnya
+            if msg_id in seen_ids:
+                continue
+
+            msg = svc.users().messages().get(
                 userId="me",
-                id=ref["id"],
+                id=msg_id,
                 format="full"
             ).execute()
 
+            # ── FIX 1: Filter by timestamp ────────────────────────────────────
+            if cutoff_ts > 0:
+                msg_ts = self._get_message_timestamp(msg)
+                if msg_ts > 0 and msg_ts < cutoff_ts:
+                    import datetime
+                    _log(
+                        f"Skip email lama ("
+                        f"{datetime.datetime.fromtimestamp(msg_ts).strftime('%H:%M:%S')}"
+                        f" < cutoff {datetime.datetime.fromtimestamp(cutoff_ts).strftime('%H:%M:%S')}"
+                        f") — bukan email sesi ini",
+                        "INFO"
+                    )
+                    seen_ids.add(msg_id)
+                    continue
+
+            subject = self._get_header(msg, "Subject")
+            _log(f"Memeriksa email: \"{subject[:60]}...\"", "INFO")
+
+            # ── FIX 2: Abaikan Welcome / Newsletter email ─────────────────────
+            if self._is_ignore_subject(subject):
+                _log(f"Skip email diabaikan (subject: '{subject[:40]}')", "INFO")
+                seen_ids.add(msg_id)
+                continue
+
+            # Tandai sebagai seen agar tidak diperiksa ulang
+            seen_ids.add(msg_id)
+
             # Ekstrak semua teks (recursive)
             body = self._extract_body_recursive(msg.get("payload", {}))
-            # Juga cek subject
-            subject = self._get_header(msg, "Subject")
+            otp  = self._extract_otp(body + " " + subject)
 
-            if log_callback:
-                log_callback(f"Memeriksa email: \"{subject[:60]}...\"", "INFO")
-
-            otp = self._extract_otp(body + " " + subject)
             if otp:
+                _log(f"OTP diekstrak dari subject: '{subject[:40]}'", "SUCCESS")
                 # Tandai sebagai sudah dibaca
                 try:
                     svc.users().messages().modify(
                         userId="me",
-                        id=ref["id"],
+                        id=msg_id,
                         body={"removeLabelIds": ["UNREAD"]}
                     ).execute()
                 except Exception:
                     pass
                 return otp
+            else:
+                _log(f"Email tidak mengandung OTP valid, skip", "INFO")
 
         return ""
 
@@ -216,7 +321,6 @@ class GmailOTPReader:
         """Rekursif ekstrak semua teks dari semua MIME part."""
         text = ""
 
-        # Cek body di level ini
         body_data = payload.get("body", {}).get("data", "")
         if body_data:
             try:
@@ -225,7 +329,6 @@ class GmailOTPReader:
             except Exception:
                 pass
 
-        # Rekursif ke sub-parts
         for part in payload.get("parts", []):
             mime = part.get("mimeType", "")
             if mime.startswith("text/") or mime.startswith("multipart/"):
@@ -246,7 +349,7 @@ class GmailOTPReader:
         Ekstrak kode OTP 6 digit dari teks.
         Prioritaskan kode yang dekat dengan kata kunci OTP.
         """
-        # Pattern 1: Langsung setelah kata kunci
+        # Pattern 1: Langsung setelah kata kunci OTP
         priority_patterns = [
             r"(?:code|kode|OTP|pin|token|verification|verify)[\s:=]+([0-9]{6})\b",
             r"\b([0-9]{6})\b(?:[\s\S]{0,30}(?:valid|expire|berlaku|minutes|menit))",
@@ -257,14 +360,13 @@ class GmailOTPReader:
             if m:
                 return m.group(1)
 
-        # Pattern 2: 6 digit yang berdiri sendiri (tidak bagian dari angka lebih panjang)
-        # Hindari tahun (1900-2099) dan nomor telepon
+        # Pattern 2: 6 digit yang berdiri sendiri
         matches = re.findall(r"(?<![0-9])([0-9]{6})(?![0-9])", text)
         for candidate in matches:
-            # Filter: bukan tahun
+            # Filter: bukan tahun (1900-2099)
             if 1900 <= int(candidate) <= 2099:
                 continue
-            # Filter: bukan angka dengan banyak pengulangan (111111, 000000)
+            # Filter: bukan angka monoton (111111, 000000)
             if len(set(candidate)) <= 1:
                 continue
             return candidate
