@@ -5,16 +5,15 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QTextEdit, QProgressBar, QFrame,
     QFileDialog, QDialog, QLineEdit, QMessageBox, QCheckBox
 )
-from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QIcon, QFont, QColor
-import qtawesome as qta
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 
 from App.config_manager import load_config, save_config
 from App.file_processor import is_valid_video
 from App.firefox_relay import FirefoxRelay
 from App.background_process import A1DProcessor
 
-# ── Color Palette ─────────────────────────────────────────────────────────────
+# ── Color Palette ─────────────────────────────────────────────────────
 BG      = "#0f172a"
 CARD    = "#1e293b"
 ACCENT  = "#7c3aed"
@@ -23,7 +22,6 @@ WARN    = "#f59e0b"
 ERR     = "#ef4444"
 TEXT    = "#f1f5f9"
 MUTED   = "#64748b"
-
 
 STYLESHEET = f"""
 QMainWindow, QWidget {{ background: {BG}; color: {TEXT}; font-family: 'Segoe UI', sans-serif; }}
@@ -35,8 +33,8 @@ QPushButton:hover {{ background: #6d28d9; }}
 QPushButton:disabled {{ background: {MUTED}; color: #334155; }}
 QPushButton#btn_cancel {{ background: {ERR}; }}
 QPushButton#btn_cancel:hover {{ background: #dc2626; }}
-QPushButton#btn_settings {{ background: transparent; border: 1px solid {MUTED}; }}
-QPushButton#btn_settings:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
+QPushButton#btn_secondary {{ background: {CARD}; color: {TEXT}; border: 1px solid {MUTED}; padding: 6px 12px; }}
+QPushButton#btn_secondary:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
 QComboBox {{
     background: {CARD}; color: {TEXT}; border: 1px solid {MUTED};
     border-radius: 6px; padding: 6px 12px; font-size: 13px;
@@ -72,18 +70,18 @@ class DropFrame(QFrame):
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(130)
         self._default_style = f"QFrame {{ border: 2px dashed {MUTED}; border-radius: 12px; background: {CARD}; }}"
         self._hover_style   = f"QFrame {{ border: 2px dashed {ACCENT}; border-radius: 12px; background: #1a1332; }}"
         self.setStyleSheet(self._default_style)
 
         lay = QVBoxLayout(self)
         lay.setAlignment(Qt.AlignCenter)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
 
-        self._icon_lbl = QLabel("🎬")
+        self._icon_lbl = QLabel("🎥")
         self._icon_lbl.setAlignment(Qt.AlignCenter)
-        self._icon_lbl.setStyleSheet("font-size: 36px; border: none;")
+        self._icon_lbl.setStyleSheet("font-size: 32px; border: none;")
 
         self._text_lbl = QLabel("Drag & Drop video ke sini\natau klik untuk pilih file")
         self._text_lbl.setAlignment(Qt.AlignCenter)
@@ -94,13 +92,12 @@ class DropFrame(QFrame):
         self.setCursor(Qt.PointingHandCursor)
 
     def set_video(self, path: str):
-        name = os.path.basename(path)
         self._icon_lbl.setText("📹")
-        self._text_lbl.setText(f"{name}\n(klik untuk ganti)")
+        self._text_lbl.setText(f"{os.path.basename(path)}\n(klik untuk ganti)")
         self._text_lbl.setStyleSheet(f"color: #a78bfa; font-size: 13px; border: none; font-weight: bold;")
 
     def reset(self):
-        self._icon_lbl.setText("🎬")
+        self._icon_lbl.setText("🎥")
         self._text_lbl.setText("Drag & Drop video ke sini\natau klik untuk pilih file")
         self._text_lbl.setStyleSheet(f"color: {MUTED}; font-size: 13px; border: none;")
 
@@ -133,57 +130,56 @@ class SettingsDialog(QDialog):
         self.base_dir = base_dir
         self.config   = config
         self.setWindowTitle("Pengaturan")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(480)
         self.setStyleSheet(STYLESHEET)
 
         lay = QVBoxLayout(self)
-        lay.setSpacing(14)
+        lay.setSpacing(12)
         lay.setContentsMargins(20, 20, 20, 20)
 
-        # ── Firefox Relay API Key ────────────────────────────────────────────
+        # Firefox Relay API Key
         lay.addWidget(QLabel("🦊  Firefox Relay API Key"))
         self.inp_key = QLineEdit(config.get("relay_api_key", ""))
         self.inp_key.setPlaceholderText("Paste API Key dari relay.firefox.com/accounts/profile/")
         self.inp_key.setEchoMode(QLineEdit.Password)
         lay.addWidget(self.inp_key)
 
-        btn_show = QPushButton("👁  Tampilkan / Sembunyikan Key")
-        btn_show.setObjectName("btn_settings")
+        row_key = QHBoxLayout()
+        btn_show = QPushButton("👁  Tampilkan Key")
+        btn_show.setObjectName("btn_secondary")
         btn_show.clicked.connect(self._toggle_echo)
-        lay.addWidget(btn_show)
-
-        btn_test = QPushButton("🔌  Test Koneksi API Key")
-        btn_test.setObjectName("btn_settings")
+        row_key.addWidget(btn_show)
+        btn_test = QPushButton("🔌  Test Koneksi")
+        btn_test.setObjectName("btn_secondary")
         btn_test.clicked.connect(self._test_relay)
-        lay.addWidget(btn_test)
+        row_key.addWidget(btn_test)
+        lay.addLayout(row_key)
 
-        # ── Headless ─────────────────────────────────────────────────────────
+        # Headless
         self.chk_headless = QCheckBox("Headless Mode (browser di background)")
         self.chk_headless.setChecked(config.get("headless", True))
         lay.addWidget(self.chk_headless)
 
-        # ── Timeout ──────────────────────────────────────────────────────────
+        # Timeout
         lay.addWidget(QLabel("Timeout Proses (detik) — default 1800 = 30 menit"))
         self.inp_timeout = QLineEdit(str(config.get("processing_hang_timeout", 1800)))
         lay.addWidget(self.inp_timeout)
 
-        # ── Save ─────────────────────────────────────────────────────────────
-        lay.addWidget(QLabel(""))  # spacer
+        lay.addStretch()
         btn_save = QPushButton("💾  Simpan Pengaturan")
         btn_save.clicked.connect(self._save)
         lay.addWidget(btn_save)
 
     def _toggle_echo(self):
-        if self.inp_key.echoMode() == QLineEdit.Password:
-            self.inp_key.setEchoMode(QLineEdit.Normal)
-        else:
-            self.inp_key.setEchoMode(QLineEdit.Password)
+        self.inp_key.setEchoMode(
+            QLineEdit.Normal if self.inp_key.echoMode() == QLineEdit.Password
+            else QLineEdit.Password
+        )
 
     def _test_relay(self):
         key = self.inp_key.text().strip()
         if not key:
-            QMessageBox.warning(self, "Error", "Masukkan API Key terlebih dahulu!")
-            return
+            QMessageBox.warning(self, "Error", "Masukkan API Key terlebih dahulu!"); return
         relay = FirefoxRelay(key)
         if relay.test_connection():
             QMessageBox.information(self, "Sukses", "Koneksi Firefox Relay berhasil! ✅")
@@ -206,13 +202,13 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, base_dir: str, icon_path):
         super().__init__()
-        self.base_dir    = base_dir
-        self.config      = load_config(base_dir)
-        self.video_path  = ""
-        self.processor   = None
+        self.base_dir   = base_dir
+        self.config     = load_config(base_dir)
+        self.video_path = ""
+        self.processor  = None
 
         self.setWindowTitle("A1D Video Upscaler v2")
-        self.setMinimumSize(700, 620)
+        self.setMinimumSize(700, 680)
         self.setStyleSheet(STYLESHEET)
         if icon_path:
             self.setWindowIcon(QIcon(icon_path))
@@ -224,16 +220,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(20, 20, 20, 20)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
-        # ── Header ───────────────────────────────────────────────────────────
+        # ── Header ──────────────────────────────────────────────────────────
         hdr = QHBoxLayout()
-        title = QLabel("🎬  A1D Video Upscaler")
-        title.setStyleSheet(f"font-size: 20px; font-weight: bold; color: #a78bfa;")
+        title = QLabel("🎥  A1D Video Upscaler")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #a78bfa;")
         hdr.addWidget(title)
         hdr.addStretch()
         btn_settings = QPushButton(" ⚙  Settings")
-        btn_settings.setObjectName("btn_settings")
+        btn_settings.setObjectName("btn_secondary")
         btn_settings.setFixedWidth(110)
         btn_settings.clicked.connect(self._open_settings)
         hdr.addWidget(btn_settings)
@@ -243,12 +239,61 @@ class MainWindow(QMainWindow):
         sub.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
         root.addWidget(sub)
 
-        # ── Drop area ─────────────────────────────────────────────────────────
+        # ── Input: Drop area + Browse file/folder ─────────────────────────────
+        inp_lbl = QLabel("📂  Input Video")
+        inp_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: bold;")
+        root.addWidget(inp_lbl)
+
         self.drop_frame = DropFrame()
         self.drop_frame.files_dropped.connect(self._on_files)
         root.addWidget(self.drop_frame)
 
-        # ── Quality selector ─────────────────────────────────────────────────
+        # Input path display
+        inp_path_row = QHBoxLayout()
+        self.inp_video_path = QLineEdit()
+        self.inp_video_path.setPlaceholderText("Path video input...")
+        self.inp_video_path.setReadOnly(True)
+        self.inp_video_path.setStyleSheet(
+            f"background: {CARD}; color: {MUTED}; border: 1px solid {MUTED};"
+            "border-radius: 6px; padding: 5px 10px; font-size: 11px;"
+        )
+        inp_path_row.addWidget(self.inp_video_path)
+
+        btn_browse_file = QPushButton("📄 Pilih File")
+        btn_browse_file.setObjectName("btn_secondary")
+        btn_browse_file.setFixedWidth(100)
+        btn_browse_file.clicked.connect(self._browse_input_file)
+        inp_path_row.addWidget(btn_browse_file)
+        root.addLayout(inp_path_row)
+
+        # ── Output Folder ───────────────────────────────────────────────────────────
+        out_lbl = QLabel("📂  Output Folder")
+        out_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: bold;")
+        root.addWidget(out_lbl)
+
+        out_row = QHBoxLayout()
+        self.inp_out_dir = QLineEdit(self.config.get("output_dir", ""))
+        self.inp_out_dir.setPlaceholderText(
+            "Default: folder video + /OUTPUT  (kosongkan untuk default)"
+        )
+        self.inp_out_dir.setReadOnly(True)
+        out_row.addWidget(self.inp_out_dir)
+
+        btn_browse_out = QPushButton("📁 Browse")
+        btn_browse_out.setObjectName("btn_secondary")
+        btn_browse_out.setFixedWidth(90)
+        btn_browse_out.clicked.connect(self._browse_output)
+        out_row.addWidget(btn_browse_out)
+
+        btn_clear_out = QPushButton("✕")
+        btn_clear_out.setObjectName("btn_secondary")
+        btn_clear_out.setFixedWidth(34)
+        btn_clear_out.setToolTip("Reset ke default (folder video + /OUTPUT)")
+        btn_clear_out.clicked.connect(self._clear_output)
+        out_row.addWidget(btn_clear_out)
+        root.addLayout(out_row)
+
+        # ── Quality + Progress ───────────────────────────────────────────────────────
         q_row = QHBoxLayout()
         q_row.addWidget(QLabel("Kualitas Output:"))
         self.combo_quality = QComboBox()
@@ -261,7 +306,6 @@ class MainWindow(QMainWindow):
         q_row.addStretch()
         root.addLayout(q_row)
 
-        # ── Progress bar ─────────────────────────────────────────────────────
         self.progress = QProgressBar()
         self.progress.setValue(0)
         self.progress.setFormat("%p%")
@@ -271,7 +315,7 @@ class MainWindow(QMainWindow):
         self.lbl_status.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
         root.addWidget(self.lbl_status)
 
-        # ── Buttons ──────────────────────────────────────────────────────────
+        # ── Buttons ───────────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         self.btn_start = QPushButton(" ▶  Start Upscale")
         self.btn_start.setFixedHeight(42)
@@ -287,33 +331,83 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_cancel)
         root.addLayout(btn_row)
 
-        # ── Log terminal ─────────────────────────────────────────────────────
+        # ── Log ───────────────────────────────────────────────────────────────────
+        log_hdr = QHBoxLayout()
         log_lbl = QLabel("📋  Log")
         log_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
-        root.addWidget(log_lbl)
+        log_hdr.addWidget(log_lbl)
+        log_hdr.addStretch()
+        btn_clear_log = QPushButton("🗑 Clear")
+        btn_clear_log.setObjectName("btn_secondary")
+        btn_clear_log.setFixedWidth(70)
+        btn_clear_log.setFixedHeight(22)
+        btn_clear_log.clicked.connect(lambda: self.log_box.clear())
+        log_hdr.addWidget(btn_clear_log)
+        root.addLayout(log_hdr)
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(160)
+        self.log_box.setMinimumHeight(150)
         root.addWidget(self.log_box)
 
-        # Footer
         footer = QLabel("Made with ❤️  by fannyf123 — Inspired by SotongHD")
         footer.setAlignment(Qt.AlignCenter)
         footer.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
         root.addWidget(footer)
 
-    # ── Event handlers ────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    #  EVENT HANDLERS
+    # ══════════════════════════════════════════════════════════════════════════
     def _on_files(self, paths: list):
         valid = [p for p in paths if is_valid_video(p)]
         if not valid:
-            QMessageBox.warning(self, "File Tidak Valid",
-                "File yang dipilih bukan video yang didukung.\n"
-                "Format: MP4, MOV, AVI, MKV, WEBM, M4V, WMV")
+            QMessageBox.warning(
+                self, "File Tidak Valid",
+                "File bukan video yang didukung.\nFormat: MP4 MOV AVI MKV WEBM M4V WMV"
+            )
             return
         self.video_path = valid[0]
         self.drop_frame.set_video(self.video_path)
-        self._log(f"Video dipilih: {os.path.basename(self.video_path)}", "INFO")
+        self.inp_video_path.setText(self.video_path)
+        # Auto-set output dir default jika belum ada
+        if not self.inp_out_dir.text().strip():
+            default_out = os.path.join(os.path.dirname(self.video_path), "OUTPUT")
+            self.inp_out_dir.setPlaceholderText(f"Default: {default_out}")
+        self._log(f"Video: {os.path.basename(self.video_path)}", "INFO")
+
+    def _browse_input_file(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Pilih Video",
+            filter="Video (*.mp4 *.mov *.avi *.mkv *.webm *.m4v *.wmv);;All (*)"
+        )
+        if files:
+            self._on_files(files)
+
+    def _browse_output(self):
+        """Pilih folder output custom."""
+        start = self.inp_out_dir.text().strip() or os.path.expanduser("~")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Pilih Folder Output", start
+        )
+        if folder:
+            self.inp_out_dir.setText(folder)
+            self.config["output_dir"] = folder
+            save_config(self.base_dir, self.config)
+            self._log(f"📁 Output folder: {folder}", "INFO")
+
+    def _clear_output(self):
+        """Reset output folder ke default."""
+        self.inp_out_dir.clear()
+        self.config["output_dir"] = ""
+        save_config(self.base_dir, self.config)
+        if self.video_path:
+            default_out = os.path.join(os.path.dirname(self.video_path), "OUTPUT")
+            self.inp_out_dir.setPlaceholderText(f"Default: {default_out}")
+        else:
+            self.inp_out_dir.setPlaceholderText(
+                "Default: folder video + /OUTPUT  (kosongkan untuk default)"
+            )
+        self._log("📁 Output folder direset ke default", "INFO")
 
     def _on_quality_changed(self, text: str):
         self.config["output_quality"] = text.lower()
@@ -325,19 +419,27 @@ class MainWindow(QMainWindow):
 
     def _start(self):
         if not self.video_path:
-            QMessageBox.warning(self, "Pilih Video", "Belum ada video yang dipilih!")
-            return
+            QMessageBox.warning(self, "Pilih Video", "Belum ada video yang dipilih!"); return
         if not self.config.get("relay_api_key", "").strip():
-            QMessageBox.warning(self, "API Key",
-                "Firefox Relay API Key belum diset!\nBuka Settings ⚙ terlebih dahulu.")
-            return
+            QMessageBox.warning(
+                self, "API Key",
+                "Firefox Relay API Key belum diset!\nBuka Settings ⚙ terlebih dahulu."
+            ); return
+
+        # Simpan output_dir ke config sebelum proses
+        out_dir_custom = self.inp_out_dir.text().strip()
+        self.config["output_dir"] = out_dir_custom
 
         self.btn_start.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.progress.setValue(0)
         self._log("=" * 50, "INFO")
-        self._log(f"Memulai: {os.path.basename(self.video_path)}", "INFO")
-        self._log(f"Kualitas: {self.config.get('output_quality', '4k').upper()}", "INFO")
+        self._log(f"Input : {self.video_path}", "INFO")
+        if out_dir_custom:
+            self._log(f"Output: {out_dir_custom}", "INFO")
+        else:
+            self._log(f"Output: {os.path.join(os.path.dirname(self.video_path), 'OUTPUT')} (default)", "INFO")
+        self._log(f"Kualitas: {self.config.get('output_quality','4k').upper()}", "INFO")
 
         self.processor = A1DProcessor(self.base_dir, self.video_path, self.config)
         self.processor.log_signal.connect(self._log)
@@ -348,7 +450,7 @@ class MainWindow(QMainWindow):
     def _cancel(self):
         if self.processor:
             self.processor.cancel()
-            self._log("Proses dibatalkan oleh user.", "WARNING")
+            self._log("Proses dibatalkan.", "WARNING")
         self.btn_cancel.setEnabled(False)
         self.btn_start.setEnabled(True)
 
@@ -361,31 +463,29 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.progress.setValue(100 if success else self.progress.value())
-
         if success:
-            self.lbl_status.setText(f"Selesai! Output: {output_path}")
-            self._log(f"SELESAI: {output_path}", "SUCCESS")
-            QMessageBox.information(self, "Selesai!",
-                f"Video berhasil di-upscale!\n\nOutput:\n{output_path}")
+            self.lbl_status.setText(f"Selesai! → {output_path}")
+            self._log(f"🏁 SELESAI: {output_path}", "SUCCESS")
+            QMessageBox.information(
+                self, "Selesai!",
+                f"Video berhasil di-upscale!✅\n\nOutput:\n{output_path}"
+            )
             self.video_path = ""
             self.drop_frame.reset()
+            self.inp_video_path.clear()
         else:
             self.lbl_status.setText(f"Error: {message}")
-            self._log(f"GAGAL: {message}", "ERROR")
+            self._log(f"❌ GAGAL: {message}", "ERROR")
             QMessageBox.critical(self, "Error", f"Proses gagal:\n{message}")
 
     def _log(self, msg: str, level: str = "INFO"):
-        ts    = datetime.datetime.now().strftime("%H:%M:%S")
-        colors = {
-            "INFO":    TEXT,
-            "SUCCESS": SUCCESS,
-            "WARNING": WARN,
-            "ERROR":   ERR,
-        }
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        colors = {"INFO": TEXT, "SUCCESS": SUCCESS, "WARNING": WARN, "ERROR": ERR}
         color = colors.get(level.upper(), TEXT)
-        html  = f'<span style="color:{MUTED}">[{ts}]</span> <span style="color:{color}">{msg}</span>'
-        self.log_box.append(html)
-        # Auto scroll ke bawah
+        self.log_box.append(
+            f'<span style="color:{MUTED}">[{ts}]</span> '
+            f'<span style="color:{color}">{msg}</span>'
+        )
         sb = self.log_box.verticalScrollBar()
         sb.setValue(sb.maximum())
 
