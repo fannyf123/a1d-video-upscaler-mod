@@ -19,11 +19,12 @@
 |---|---|
 | 🤖 **Full Otomasi** | Login, upload, pilih kualitas, download — semua otomatis |
 | 🚀 **Batch Mode** | Proses hingga **5 video paralel** sekaligus |
-| 🎨 **Dark GUI** | Antarmuka modern dark-theme, drag & drop support |
+| 🎨 **Dark / Light GUI** | Antarmuka modern dark-theme & light-theme, drag & drop support |
 | 🦁 **Playwright** | Tidak perlu install Chrome — Playwright bundled Chromium |
 | 📧 **Email Mask** | Firefox Relay untuk akun temporary sekali pakai |
+| 🔄 **OTP Auto-Retry** | OTP gagal? Otomatis klik Resend atau restart sign-in (max 3x) |
 | 📊 **Real-time Log** | Log berwarna dengan timestamp per worker |
-| ⚙️ **Configurable** | Kualitas output, jumlah worker, stagger delay |
+| ⚙️ **Configurable** | Kualitas output, jumlah worker, stagger delay, timeout |
 
 ---
 
@@ -46,8 +47,8 @@
 
 ### 1. Clone repo
 ```bash
-git clone https://github.com/fannyf123/a1d-video-upscaler-v2.git
-cd a1d-video-upscaler-v2
+git clone https://github.com/fannyf123/a1d-video-upscaler.git
+cd a1d-video-upscaler
 ```
 
 ### 2. Install dependencies
@@ -89,6 +90,7 @@ python main.py
   "headless": true,
   "max_workers": 3,
   "batch_stagger_delay": 15,
+  "initial_download_wait": 120,
   "processing_hang_timeout": 1800,
   "download_timeout": 600
 }
@@ -102,7 +104,8 @@ python main.py
 | `headless` | bool | `true` | Jalankan browser tanpa tampilan |
 | `max_workers` | int | `3` | Jumlah video paralel (1–5) |
 | `batch_stagger_delay` | int | `15` | Jeda detik antar worker start |
-| `processing_hang_timeout` | int | `1800` | Timeout proses render (detik) |
+| `initial_download_wait` | int | `120` | Tunggu (detik) sebelum cek tombol Download |
+| `processing_hang_timeout` | int | `1800` | Timeout total proses render (detik) |
 | `download_timeout` | int | `600` | Timeout download file (detik) |
 
 ---
@@ -110,17 +113,20 @@ python main.py
 ## 📁 Struktur Proyek
 
 ```
-a1d-video-upscaler-v2/
+a1d-video-upscaler/
 ├── App/
 │   ├── background_process.py   # Core: Playwright automation (A1DProcessor)
 │   ├── batch_processor.py      # Batch: paralel multi-video (BatchProcessor)
 │   ├── firefox_relay.py        # Firefox Relay API wrapper
-│   └── gmail_otp.py            # Gmail OTP reader via Google API
-├── main.py                     # GUI utama (PySide6 dark theme)
+│   ├── gmail_otp.py            # Gmail OTP reader via Google API
+│   └── temp_cleanup.py         # Cleanup temp/crdownload files
+├── main.py                     # GUI utama (PySide6 dark/light theme)
 ├── config.json                 # Konfigurasi
 ├── requirements.txt
 ├── Launcher.bat                # Launcher Windows
-└── Launcher.sh                 # Launcher Linux/macOS
+├── Launcher.sh                 # Launcher Linux/macOS
+├── build.spec                  # PyInstaller build config
+└── update.bat                  # Auto-update script
 ```
 
 ---
@@ -131,14 +137,19 @@ a1d-video-upscaler-v2/
 1. User drag & drop video ke GUI
 2. BatchProcessor start N worker paralel (stagger 15s)
    └─ Tiap worker (A1DProcessor):
-       ├─ Firefox Relay → buat email mask sementara
-       ├─ Playwright Chromium → buka a1d.ai/auth/sign-in
-       ├─ Input email → request OTP
-       ├─ Gmail API → baca OTP otomatis
-       ├─ Submit OTP → login berhasil
-       ├─ Playwright → buka video editor, upload file
-       ├─ Pilih kualitas (4K/2K/1080p)
-       ├─ Klik Generate → tunggu 2 menit awal
+       ├─ Firefox Relay  → buat email mask sementara
+       ├─ Playwright     → buka a1d.ai/auth/sign-in
+       ├─ Input email    → request OTP
+       ├─ Gmail API      → baca OTP otomatis
+       ├─ Submit OTP     → jika gagal, auto-retry (max 3x):
+       │     ├─ Cek tombol Resend OTP di halaman
+       │     │   ✅ Ada  → klik Resend, bersihkan input, isi OTP baru
+       │     │   ❌ Tidak ada → kembali ke sign-in, input email ulang
+       │     └─ Ulangi hingga berhasil atau percobaan habis
+       ├─ Login berhasil → buka video editor
+       ├─ Upload file video
+       ├─ Pilih kualitas (4K / 2K / 1080p)
+       ├─ Klik Generate  → tunggu initial wait
        ├─ Polling tombol Download → expect_download()
        └─ File tersimpan ke output folder
 3. Summary: ✅ N berhasil / ❌ N gagal
@@ -159,9 +170,20 @@ App ini menggunakan **Playwright Chromium** (bukan Selenium):
 
 ---
 
+## 🔐 OTP Auto-Retry
+
+Jika OTP pertama gagal/kadaluarsa, sistem secara otomatis mencoba ulang hingga **3 kali**:
+
+1. **Cek tombol Resend** di halaman OTP → klik jika ada
+2. Jika tidak ada tombol Resend → **kembali ke halaman sign-in**, isi email ulang
+3. Bersihkan kolom input OTP dari kode lama
+4. Tunggu OTP baru dari Gmail, isi, dan submit kembali
+
+---
+
 ## ⚠️ Disclaimer
 
-Tool ini dibuat untuk keperluan **pribadi/edukasi**. Penggunaan berlebihan dapat melanggar Terms of Service a1d.ai. Gunakan dengan bijak.
+Tool ini dibuat untuk keperluan **pribadi / edukasi**. Penggunaan berlebihan dapat melanggar Terms of Service a1d.ai. Gunakan dengan bijak.
 
 ---
 
