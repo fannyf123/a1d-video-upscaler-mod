@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread, Signal
 
 from App.firefox_relay import FirefoxRelay
 from App.gmail_otp import GmailOTPReader
+from App.temp_cleanup import clean_temp_files
 
 A1D_EMAIL_ID = "#_R_4p5fiv9fkjb_-form-item"
 
@@ -42,6 +43,7 @@ class A1DProcessor(QThread):
 
         self._relay   = None
         self._mask_id = None
+        self._out_dir = ""   # set in _process(); used by _cleanup_temp_files()
 
         base = self.config.get("a1d_url", self._DEFAULT_BASE).rstrip("/")
         self.SIGNIN_URL = f"{base}/auth/sign-in"
@@ -61,8 +63,8 @@ class A1DProcessor(QThread):
             self.log(f"Error: {e}", "ERROR")
             self.finished_signal.emit(False, str(e), "")
         finally:
-            # Mask deleted first (fast), browser closed asynchronously
             self._cleanup_mask()
+            self._cleanup_temp_files()   # ← bersihkan .tmp/.crdownload dari out_dir
             self._quit_browser()
 
     def _cleanup_mask(self):
@@ -76,11 +78,15 @@ class A1DProcessor(QThread):
                 self._relay   = None
                 self._mask_id = None
 
+    def _cleanup_temp_files(self):
+        """Delete leftover .tmp / .crdownload files from the output directory."""
+        if self._out_dir:
+            clean_temp_files(self._out_dir, log_fn=self.log)
+
     def _quit_browser(self):
         """
         Close Playwright + Chromium in a daemon thread so the worker's run()
         returns immediately without waiting for a potentially-hanging browser.close().
-        The daemon thread is automatically killed when the main process exits.
         """
         browser, pw = self._browser, self._pw
         self._browser = None
@@ -99,8 +105,6 @@ class A1DProcessor(QThread):
 
         t = threading.Thread(target=_do_close, daemon=True, name="pw-close")
         t.start()
-        # Wait max 8s; if Playwright/Chromium is still hanging, abandon the thread.
-        # (daemon=True means it will be killed when the process exits anyway.)
         t.join(timeout=8)
 
     # ══ CORE PROCESS ═══════════════════════════════════════════════════════════
@@ -126,7 +130,13 @@ class A1DProcessor(QThread):
                   else os.path.join(os.path.dirname(self.video_path), "OUTPUT")
         out_dir = os.path.normpath(os.path.abspath(raw_dir))
         os.makedirs(out_dir, exist_ok=True)
+        self._out_dir = out_dir   # ← simpan agar cleanup bisa pakai
         self.log(f"📁 Output: {out_dir}", "INFO")
+
+        # Clean up leftover temp files from any previous failed runs
+        prev = clean_temp_files(out_dir)
+        if prev:
+            self.log(f"🧹 Hapus {prev} file temp sisa dari run sebelumnya", "INFO")
 
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
