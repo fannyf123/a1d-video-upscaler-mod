@@ -32,7 +32,6 @@ QUALITY_TEXTS = {
 # ── QUALITY_PRIORITY: isi dari hasil tools/inspect_quality.py ───────────────
 # Selector di sini dicoba PERTAMA sebelum fallback generic.
 # Format: key = kualitas ("4k"/"2k"/"1080p"), value = list CSS/XPath.
-# Kosongkan dict ini jika belum tahu selectornya.
 QUALITY_PRIORITY: dict[str, list[str]] = {
     # Contoh (ganti dengan hasil inspect_quality.py):
     # "4k":    ['[data-value="4k"]', '//button[normalize-space(.)="4K"]'],
@@ -140,7 +139,8 @@ class A1DProcessor(QThread):
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-gpu")
         opts.add_argument("--window-size=1920,1080")
-        opts.add_argument("--incognito")
+        # HAPUS --incognito: mode incognito membuat prefs download direset
+        # sehingga dialog Save As muncul kembali
         opts.add_argument("--mute-audio")
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument(
@@ -149,17 +149,36 @@ class A1DProcessor(QThread):
         )
         opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
         opts.add_experimental_option("useAutomationExtension", False)
+        # ── Download prefs: pastikan prompt_for_download=False dan saveas dimatikan ──
         opts.add_experimental_option("prefs", {
-            "download.default_directory":  out_dir,
-            "download.prompt_for_download": False,
-            "download.directory_upgrade":   True,
-            "safebrowsing.enabled":         False,
+            "download.default_directory":           out_dir,
+            "download.prompt_for_download":          False,   # matikan dialog Save As
+            "download.directory_upgrade":            True,
+            "download.open_pdf_in_system_reader":    False,
+            "download_restrictions":                 0,       # 0 = izinkan semua download
+            "safebrowsing.enabled":                  False,
+            "safebrowsing.disable_download_protection": True,
             "profile.default_content_setting_values.automatic_downloads": 1,
+            # Matikan dialog konfirmasi download file tertentu
+            "profile.content_settings.exceptions.automatic_downloads.*.setting": 1,
         })
 
         self.driver = webdriver.Chrome(service=Service(drv_path), options=opts)
         self.driver.set_page_load_timeout(60)
         wait = WebDriverWait(self.driver, 30)
+
+        # ── FIX UTAMA: CDP setDownloadBehavior ─────────────────────────────────
+        # prefs saja TIDAK cukup di headless mode (bug Chrome).
+        # CDP override ini yang benar-benar menonaktifkan dialog Save As.
+        try:
+            self.driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+                "behavior":     "allow",
+                "downloadPath": out_dir,
+            })
+            self.log("✅ CDP download behavior: allow → " + out_dir, "INFO")
+        except Exception as e:
+            self.log(f"⚠️ CDP setDownloadBehavior: {e}", "WARNING")
+        # ───────────────────────────────────────────────────────────────────
 
         try:
             # Step 3: Buka SIGN-IN
@@ -503,129 +522,79 @@ class A1DProcessor(QThread):
         self.log("⚠️ Quality options belum muncul — lanjut", "WARNING")
 
     def _debug_dump_quality(self):
-        """
-        Dipanggil otomatis saat quality selector gagal.
-        Simpan ke base_dir/debug/quality_HHMMSS.{png,html,json}
-        Buka file tersebut untuk inspect selector yang tepat.
-        Atau jalankan tools/inspect_quality.py untuk cara lebih mudah.
-        """
         try:
             ts        = datetime.datetime.now().strftime("%H%M%S")
             debug_dir = os.path.join(self.base_dir, "debug")
             os.makedirs(debug_dir, exist_ok=True)
-
-            # Screenshot
             ss_path = os.path.join(debug_dir, f"quality_{ts}.png")
             self.driver.save_screenshot(ss_path)
             self.log(f"📸 Screenshot → {ss_path}", "WARNING")
-
-            # HTML
             html_path = os.path.join(debug_dir, f"quality_{ts}.html")
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(self.driver.page_source)
             self.log(f"📄 HTML dump → {html_path}", "WARNING")
-
-            # Element report
             raw = self.driver.execute_script("""
-                const SELS = [
-                    'button','[role="button"]','[role="radio"]','[role="tab"]',
+                const SELS = ['button','[role="button"]','[role="radio"]','[role="tab"]',
                     'label','[class*="option"]','[class*="quality"]',
                     '[class*="resolution"]','[class*="select"]','[class*="card"]',
-                    '[class*="pill"]','[class*="btn"]','input[type="radio"]',
-                ];
-                const seen = new Set();
-                const out  = [];
+                    '[class*="pill"]','[class*="btn"]','input[type="radio"]'];
+                const seen = new Set(); const out = [];
                 for (const sel of SELS) {
-                    let els;
-                    try { els = document.querySelectorAll(sel); } catch(e){ continue; }
+                    let els; try{els=document.querySelectorAll(sel);}catch(e){continue;}
                     for (const el of els) {
                         if (seen.has(el)) continue; seen.add(el);
                         const r = el.getBoundingClientRect();
                         if (r.width===0||r.height===0) continue;
-                        out.push({
-                            tag:  el.tagName,
-                            text: el.textContent.trim().substring(0,70),
-                            cls:  el.className.substring(0,100),
-                            id:   el.id||'',
-                            dv:   el.getAttribute('data-value')||'',
-                            dq:   el.getAttribute('data-quality')||'',
-                            dr:   el.getAttribute('data-resolution')||'',
-                            al:   el.getAttribute('aria-label')||'',
-                            role: el.getAttribute('role')||'',
-                            x: Math.round(r.x), y: Math.round(r.y),
-                            w: Math.round(r.width), h: Math.round(r.height),
-                        });
+                        out.push({tag:el.tagName,text:el.textContent.trim().substring(0,70),
+                            cls:el.className.substring(0,100),id:el.id||'',
+                            dv:el.getAttribute('data-value')||'',
+                            dq:el.getAttribute('data-quality')||'',
+                            dr:el.getAttribute('data-resolution')||'',
+                            al:el.getAttribute('aria-label')||'',
+                            role:el.getAttribute('role')||'',
+                            x:Math.round(r.x),y:Math.round(r.y),
+                            w:Math.round(r.width),h:Math.round(r.height)});
                     }
-                }
-                return JSON.stringify(out.slice(0,60));
+                } return JSON.stringify(out.slice(0,60));
             """)
             items = json.loads(raw or '[]')
             json_path = os.path.join(debug_dir, f"quality_{ts}.json")
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(items, f, indent=2, ensure_ascii=False)
-            self.log(f"📊 JSON report → {json_path} ({len(items)} items)", "WARNING")
-
-            # Print selector hints langsung ke log
-            kw = ['4k', '2k', '1080', 'quality', 'resolution', 'hd', 'uhd']
-            hints_found = False
+            self.log(f"📊 JSON → {json_path} ({len(items)} items)", "WARNING")
+            kw = ['4k','2k','1080','quality','resolution','hd','uhd']
             for it in items:
-                low = (
-                    it.get('text','') + it.get('dv','') +
-                    it.get('al','')  + it.get('cls','')
-                ).lower()
-                if not any(k in low for k in kw):
-                    continue
-                hints_found = True
+                low = (it.get('text','')+it.get('dv','')+it.get('al','')+it.get('cls','')).lower()
+                if not any(k in low for k in kw): continue
                 sels = []
-                if it.get('id'): sels.append(f'#{it["id"]}')
-                if it.get('dv'): sels.append(f'[data-value="{it["dv"]}"]')
-                if it.get('dq'): sels.append(f'[data-quality="{it["dq"]}"]')
-                if it.get('dr'): sels.append(f'[data-resolution="{it["dr"]}"]')
-                if it.get('al'): sels.append(f'[aria-label="{it["al"]}"]')
-                txt = it.get('text','').strip()
-                tag = it.get('tag','*').lower()
+                if it.get('id'):  sels.append(f'#{it["id"]}')
+                if it.get('dv'):  sels.append(f'[data-value="{it["dv"]}"]')
+                if it.get('al'):  sels.append(f'[aria-label="{it["al"]}"]')
+                txt=it.get('text','').strip(); tag=it.get('tag','*').lower()
                 if txt: sels.append(f'//{tag}[normalize-space(.)="{txt}"]')
-                self.log(
-                    f"  🎯 <{it['tag']}> '{it['text'][:30]}' "
-                    f"| best: {sels[0] if sels else '(kosong)'}",
-                    "WARNING"
-                )
-
-            if not hints_found:
-                self.log("  ⚠️ Tidak ada quality element di DOM!", "WARNING")
-                self.log("  -> Kemungkinan butuh waktu lebih untuk render", "WARNING")
-
-            self.log(
-                "💡 Untuk inspect manual, jalankan: python tools/inspect_quality.py",
-                "WARNING"
-            )
-            self.log(
-                "💡 Lalu copy selector ke QUALITY_PRIORITY di background_process.py",
-                "WARNING"
-            )
+                self.log(f"  🎯 <{it['tag']}> '{it['text'][:30]}' | {sels[0] if sels else '?'}", "WARNING")
+            self.log("💡 Jalankan: python tools/inspect_quality.py", "WARNING")
         except Exception as e:
-            self.log(f"_debug_dump_quality err: {e}", "INFO")
+            self.log(f"_debug_dump_quality: {e}", "INFO")
 
     def _log_quality_elements(self):
         try:
             result = self.driver.execute_script("""
-                const kw = ['4k','2k','1080','quality','resolution','hd','uhd','fhd'];
-                const found = [];
-                const els = document.querySelectorAll(
+                const kw=['4k','2k','1080','quality','resolution','hd','uhd','fhd'];
+                const found=[];
+                document.querySelectorAll(
                     'button,[role="button"],[role="radio"],label,
                      [class*="option"],[class*="quality"],[class*="resolution"],
                      [class*="tab"],[class*="card"],[class*="btn"]'
-                );
-                els.forEach(el => {
-                    const r = el.getBoundingClientRect();
-                    if (r.width===0||r.height===0) return;
-                    const txt = el.textContent.trim().toLowerCase();
-                    if (!kw.some(k => txt.includes(k))) return;
+                ).forEach(el=>{
+                    const r=el.getBoundingClientRect();
+                    if(r.width===0||r.height===0) return;
+                    const txt=el.textContent.trim().toLowerCase();
+                    if(!kw.some(k=>txt.includes(k))) return;
                     found.push({tag:el.tagName,text:el.textContent.trim().substring(0,60),
                         cls:el.className.substring(0,80),
                         dv:el.getAttribute('data-value')||'',role:el.getAttribute('role')||''});
-                });
-                return JSON.stringify(found.slice(0,10));
+                }); return JSON.stringify(found.slice(0,10));
             """)
             items = json.loads(result or '[]')
             if items:
@@ -643,19 +612,15 @@ class A1DProcessor(QThread):
         self.log(f"📺 Pilih kualitas: {q.upper()}", "INFO")
         self._wait_for_quality_options(timeout=15)
 
-        # ── Layer 0: PRIORITY selector (dari tools/inspect_quality.py atau config) ──
-        priority_cfg = self.config.get(f"quality_css_{q}", "").strip()
+        priority_cfg  = self.config.get(f"quality_css_{q}", "").strip()
         priority_list = list(QUALITY_PRIORITY.get(q, []))
         if priority_cfg:
             priority_list.insert(0, priority_cfg)
-
         for sel in priority_list:
             try:
-                el = (
-                    self.driver.find_element(By.XPATH, sel)
-                    if sel.startswith("//")
-                    else self.driver.find_element(By.CSS_SELECTOR, sel)
-                )
+                el = (self.driver.find_element(By.XPATH, sel)
+                      if sel.startswith("//")
+                      else self.driver.find_element(By.CSS_SELECTOR, sel))
                 if el.is_displayed():
                     el.click()
                     self.log(f"✅ {q.upper()} dipilih (PRIORITY): {sel}", "SUCCESS")
@@ -663,7 +628,6 @@ class A1DProcessor(QThread):
             except Exception:
                 continue
 
-        # ── Layer 1: JS comprehensive scan ──
         js_result = None
         try:
             js_result = self.driver.execute_script("""
@@ -678,37 +642,30 @@ class A1DProcessor(QThread):
                     '[class*="btn"],[class*="radio"],[tabindex="0"]',
                 ];
                 for (const sel of CLICKABLE) {
-                    let els;
-                    try { els = document.querySelectorAll(sel); } catch(e){ continue; }
+                    let els; try{els=document.querySelectorAll(sel);}catch(e){continue;}
                     for (const el of els) {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.width===0||rect.height===0) continue;
-                        const txt = el.textContent.trim();
-                        const val = (
-                            el.value||
-                            el.getAttribute('data-value')||
+                        const rect=el.getBoundingClientRect();
+                        if(rect.width===0||rect.height===0) continue;
+                        const txt=el.textContent.trim();
+                        const val=(el.value||el.getAttribute('data-value')||
                             el.getAttribute('data-quality')||
                             el.getAttribute('data-resolution')||
-                            el.getAttribute('aria-label')||''
-                        );
+                            el.getAttribute('aria-label')||'');
                         for (const t of targets) {
-                            if (
-                                txt===t||txt.toLowerCase()===t.toLowerCase()||
-                                txt.trim().toUpperCase()===t.toUpperCase()||
-                                txt.includes(t)||val.toLowerCase()===t.toLowerCase()||
-                                val.toLowerCase().includes(t.toLowerCase())
-                            ) {
+                            if(txt===t||txt.toLowerCase()===t.toLowerCase()||
+                               txt.trim().toUpperCase()===t.toUpperCase()||
+                               txt.includes(t)||val.toLowerCase()===t.toLowerCase()||
+                               val.toLowerCase().includes(t.toLowerCase())){
                                 el.scrollIntoView({block:'center',behavior:'instant'});
                                 el.click();
-                                ['click','mousedown','mouseup'].forEach(ev => {
+                                ['click','mousedown','mouseup'].forEach(ev=>{
                                     try{el.dispatchEvent(new MouseEvent(ev,{bubbles:true}));}catch(_){}
                                 });
                                 return 'OK|'+sel+'|'+txt.substring(0,40);
                             }
                         }
                     }
-                }
-                return 'NOT_FOUND';
+                } return 'NOT_FOUND';
             """, texts)
         except Exception as e:
             self.log(f"⚠️ JS quality: {e}", "WARNING")
@@ -718,14 +675,11 @@ class A1DProcessor(QThread):
             self.log(f"✅ {q.upper()} dipilih (JS) text='{parts[2]}'", "SUCCESS")
             time.sleep(0.8); return
 
-        # ── Layer 2: CSS/XPath fallback ──
         for sel in self.QUALITY_SELECTORS.get(q, self.QUALITY_SELECTORS["4k"]):
             try:
-                el = (
-                    self.driver.find_element(By.XPATH, sel)
-                    if sel.startswith("//")
-                    else self.driver.find_element(By.CSS_SELECTOR, sel)
-                )
+                el = (self.driver.find_element(By.XPATH, sel)
+                      if sel.startswith("//")
+                      else self.driver.find_element(By.CSS_SELECTOR, sel))
                 if el.is_displayed():
                     el.click()
                     self.log(f"✅ {q.upper()} dipilih (CSS/XPath): {sel}", "SUCCESS")
@@ -733,9 +687,8 @@ class A1DProcessor(QThread):
             except Exception:
                 continue
 
-        # ── Semua gagal: debug dump ──
         self._log_quality_elements()
-        self._debug_dump_quality()          # ← simpan screenshot + JSON ke debug/
+        self._debug_dump_quality()
         self.log(f"⚠️ Quality {q.upper()} tidak ditemukan — lanjut", "WARNING")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -762,11 +715,11 @@ class A1DProcessor(QThread):
                 continue
         try:
             res = self.driver.execute_script("""
-                const btns = document.querySelectorAll('button');
-                for (const b of btns) {
-                    const t = b.textContent.trim().toLowerCase();
-                    if (t.includes('generate')||t.includes('upscale')||
-                        t.includes('enhance')||t.includes('start')||t.includes('process')){
+                const btns=document.querySelectorAll('button');
+                for(const b of btns){
+                    const t=b.textContent.trim().toLowerCase();
+                    if(t.includes('generate')||t.includes('upscale')||
+                       t.includes('enhance')||t.includes('start')||t.includes('process')){
                         b.scrollIntoView({block:'center'}); b.click();
                         return 'clicked:'+b.textContent.trim();
                     }
