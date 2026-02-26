@@ -41,6 +41,7 @@ for %%f in ("%PYTHON_DIR%\python312._pth") do (
     echo import site >> "%%f"
 )
 
+
 "%PYTHON_EXE%" get-pip.py --quiet
 del get-pip.py
 
@@ -50,6 +51,15 @@ echo [INFO] Menginstall/memperbarui dependencies...
 
 if errorlevel 1 (
     echo [ERROR] Gagal install dependencies!
+    pause
+    exit /b 1
+)
+
+echo [INFO] Menginstall Playwright browser (chromium)...
+"%PYTHON_EXE%" -m playwright install chromium
+
+if errorlevel 1 (
+    echo [ERROR] Gagal install Playwright browser!
     pause
     exit /b 1
 )
