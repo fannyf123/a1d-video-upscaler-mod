@@ -14,7 +14,6 @@ import os
 from typing import List, Callable, Optional
 
 from App.gemini_enterprise import GeminiEnterpriseProcessor
-from App.firefox_relay import FirefoxRelayAPI
 
 GEMINI_MAX_WORKERS = 3   # max paralel generate video
 
@@ -74,7 +73,6 @@ class GeminiBatchProcessor(threading.Thread):
         )
 
         total      = len(self.prompts)
-        relay      = FirefoxRelayAPI(relay_api_key)
         semaphore  = threading.Semaphore(max_workers)
         done_count = [0]
         threads    = []
@@ -92,15 +90,7 @@ class GeminiBatchProcessor(threading.Thread):
                 if self._cancelled:
                     return
 
-                # Buat email mask baru
-                try:
-                    mask = relay.create_mask()
-                    self._log(f"[Worker {idx+1}] 📧 Mask: {mask}")
-                except Exception as e:
-                    self._log(f"[Worker {idx+1}] ❌ Gagal buat mask: {e}", "ERROR")
-                    with self._lock:
-                        self._results[idx] = None
-                    return
+                # Masking dibuat oleh prosesor itu sendiri
 
                 # Jalankan generate video
                 def worker_log(msg, level="INFO"):
@@ -126,7 +116,6 @@ class GeminiBatchProcessor(threading.Thread):
                 proc = GeminiEnterpriseProcessor(
                     base_dir          = self.base_dir,
                     prompt            = prompt,
-                    mask_email        = mask,
                     output_dir        = output_dir,
                     config            = self.config,
                     log_callback      = worker_log,

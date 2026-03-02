@@ -7,8 +7,7 @@ menggunakan Playwright + OTP via GmailOTPReader yang sudah ada.
 Flow:
     1. Buka auth.business.gemini.google/login
     2. Input email (Firefox Relay mask)
-    3. Baca OTP dari Gmail via GmailOTPReader
-    4. Submit OTP → masuk dashboard
+5. Klik "+" → "Create videos with Veo"
     5. Klik "+" → "Create videos with Veo"
     6. Input prompt
     7. Submit → polling sampai video selesai
@@ -25,8 +24,7 @@ from typing import Optional, Callable
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-from App.gmail_otp import GmailOTPReader
-from App.firefox_relay import FirefoxRelayAPI
+from App.mailticking_pw import MailtickingClient
 
 # ─── URL Konstanta ─────────────────────────────────────────────────────────
 GEMINI_LOGIN_URL = "https://auth.business.gemini.google/login?continueUrl=https://business.gemini.google/"
@@ -63,14 +61,13 @@ class GeminiEnterpriseProcessor(threading.Thread):
         super().__init__(daemon=True)
         self.base_dir          = base_dir
         self.prompt            = prompt
-        self.mask_email        = mask_email
+        self.mask_email        = ""
         self.output_dir        = output_dir or os.path.join(base_dir, "OUTPUT_GEMINI")
         self.config            = config
         self.log_cb            = log_callback
         self.progress_cb       = progress_callback
         self.finished_cb       = finished_callback
         self._cancelled        = False
-        self._otp_reader       = GmailOTPReader(base_dir)
 
     # ── Helpers ─────────────────────────────────────────────────────────────
     def _log(self, msg: str, level: str = "INFO"):
@@ -114,8 +111,7 @@ class GeminiEnterpriseProcessor(threading.Thread):
                 )
                 page = ctx.new_page()
 
-                # ── Step 1: Login ──────────────────────────────────────────
-                output_path = self._run_session(page)
+                output_path = self._run_session(page, ctx)
 
                 browser.close()
 
@@ -129,10 +125,20 @@ class GeminiEnterpriseProcessor(threading.Thread):
             self._finished(False, str(e))
 
     # ── Session Logic ────────────────────────────────────────────────────────
-    def _run_session(self, page) -> Optional[str]:
+    def _run_session(self, page, ctx) -> Optional[str]:
+
+        # Buka mailticking dulu
+        self._log("Membuka mailticking untuk temp email...")
+        self.mail_page = ctx.new_page()
+        mail_client = MailtickingClient(self.mail_page, log_callback=self._log)
+        self.mask_email = mail_client.open_mailticking()
+        self._log(f"Temp email: {self.mask_email}", "SUCCESS")
+
+        self.mail_page.bring_to_front()
 
         # ── Step 1: Buka halaman login ─────────────────────────────────────
         self._log("🌐 Membuka halaman login Gemini Enterprise...")
+        page.bring_to_front()
         self._progress(5, "Membuka halaman login...")
         page.goto(GEMINI_LOGIN_URL, wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_timeout(2000)
@@ -169,55 +175,50 @@ class GeminiEnterpriseProcessor(threading.Thread):
 
         if self._cancelled: return None
 
-        # ── Step 3: OTP via Gmail ──────────────────────────────────────────
-        self._progress(20, "Menunggu OTP dari Gmail...")
+        # ── Step 3: OTP via mailticking ──────────────────────────────────────────
+        self._progress(20, "Menunggu OTP dari mailticking...")
         otp_code = None
-        reg_ts    = int(time.time())
 
         for attempt in range(1, MAX_OTP_RETRY + 1):
             self._log(f"📬 Polling OTP (percobaan {attempt}/{MAX_OTP_RETRY})...")
-            try:
-                otp_code = self._otp_reader.wait_for_otp(
-                    sender          = "google.com",
-                    timeout         = OTP_TIMEOUT,
-                    interval        = 5,
-                    log_callback    = self.log_cb,
-                    mask_email      = self.mask_email,
-                    after_timestamp = reg_ts,
-                )
-                self._log(f"✅ OTP diterima: {otp_code}", "SUCCESS")
-                break
+            
+            found = mail_client.wait_for_verification_email(timeout=OTP_TIMEOUT)
+            if found:
+                otp_code = mail_client.extract_verification_code()
+                if otp_code:
+                    self._log(f"✅ OTP diterima: {otp_code}", "SUCCESS")
+                    break
 
-            except TimeoutError:
-                self._log(f"⚠️  OTP timeout percobaan {attempt}", "WARNING")
-                if attempt < MAX_OTP_RETRY:
-                    # Coba resend OTP
-                    resend = page.query_selector(
-                        "button:has-text('Resend'), a:has-text('Resend'), "
-                        "button:has-text('Send again'), a:has-text('Send again')"
+            if attempt < MAX_OTP_RETRY:
+                self._log(f"⚠️  OTP gagal/timeout percobaan {attempt}", "WARNING")
+                # Coba resend OTP
+                page.bring_to_front()
+                resend = page.query_selector(
+                    "button:has-text('Resend'), a:has-text('Resend'), "
+                    "button:has-text('Send again'), a:has-text('Send again')"
+                )
+                if resend:
+                    self._log("🔄 Klik Resend OTP...")
+                    resend.click()
+                    page.wait_for_timeout(2000)
+                else:
+                    # Kembali ke halaman input email
+                    self._log("🔄 Kembali ke halaman login, ulang input email...")
+                    page.goto(GEMINI_LOGIN_URL, wait_until="domcontentloaded")
+                    page.wait_for_timeout(1500)
+                    ei = page.query_selector(
+                        "input[type='email'], input[name='email']"
                     )
-                    if resend:
-                        self._log("🔄 Klik Resend OTP...")
-                        resend.click()
+                    if ei:
+                        ei.fill(self.mask_email)
+                        page.keyboard.press("Enter")
                         page.wait_for_timeout(2000)
-                        reg_ts = int(time.time())
-                    else:
-                        # Kembali ke halaman input email
-                        self._log("🔄 Kembali ke halaman login, ulang input email...")
-                        page.goto(GEMINI_LOGIN_URL, wait_until="domcontentloaded")
-                        page.wait_for_timeout(1500)
-                        ei = page.query_selector(
-                            "input[type='email'], input[name='email']"
-                        )
-                        if ei:
-                            ei.fill(self.mask_email)
-                            page.keyboard.press("Enter")
-                            page.wait_for_timeout(2000)
-                            reg_ts = int(time.time())
 
         if not otp_code:
             self._log("❌ Gagal mendapatkan OTP setelah semua percobaan!", "ERROR")
             return None
+        
+        page.bring_to_front()
 
         if self._cancelled: return None
 

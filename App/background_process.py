@@ -10,11 +10,11 @@ import requests as req
 from playwright.sync_api import sync_playwright, Page, Download, TimeoutError as PWTimeout
 from PySide6.QtCore import QThread, Signal
 
-from App.firefox_relay import FirefoxRelay
-from App.gmail_otp import GmailOTPReader
+from App.mailticking_pw import MailtickingClient
 from App.temp_cleanup import clean_temp_files
 
 A1D_EMAIL_ID = "#_R_4p5fiv9fkjb_-form-item"
+A1D_OTP_ID = "#_r_0_-form-item"
 
 QUALITY_TEXTS = {
     "1080p": ["1080p", "1080", "Full HD", "FHD", "1080P", "Full HD (1080p)"],
@@ -43,8 +43,6 @@ class A1DProcessor(QThread):
         self._browser   = None
         self._cancelled = False
 
-        self._relay   = None
-        self._mask_id = None
         self._out_dir = ""   # set in _process(); used by _cleanup_temp_files()
 
         base = self.config.get("a1d_url", self._DEFAULT_BASE).rstrip("/")
@@ -65,22 +63,8 @@ class A1DProcessor(QThread):
             self.log(f"Error: {e}", "ERROR")
             self.finished_signal.emit(False, str(e), "")
         finally:
-            self._cleanup_mask()
-            # ✔ quit_browser FIRST (waits up to 8 s for Chromium to release
-            #   all file handles), THEN clean .tmp so files are not locked.
             self._quit_browser()
             self._cleanup_temp_files()
-
-    def _cleanup_mask(self):
-        if self._relay and self._mask_id:
-            try:
-                self._relay.delete_mask(self._mask_id)
-                self.log("Email mask dihapus", "INFO")
-            except Exception:
-                pass
-            finally:
-                self._relay   = None
-                self._mask_id = None
 
     def _cleanup_temp_files(self):
         """Delete leftover .tmp / .crdownload from the output directory."""
@@ -110,20 +94,6 @@ class A1DProcessor(QThread):
     # ══ CORE PROCESS ═══════════════════════════════════════════════════════════
     def _process(self) -> str:
         self.log("Memulai proses upscale...", "INFO")
-        self.prog(5, "Membuat email mask...")
-        api_key = self.config.get("relay_api_key", "").strip()
-        if not api_key:
-            raise ValueError("Firefox Relay API Key belum diset!")
-
-        relay     = FirefoxRelay(api_key)
-        mask_data = relay.create_mask("a1d-upscale-session")
-        email     = mask_data["full_address"]
-        mask_id   = mask_data["id"]
-        self._relay   = relay
-        self._mask_id = mask_id
-
-        self.log(f"Email mask: {email}", "SUCCESS")
-        self.prog(10, "Email mask siap")
 
         out_dir_custom = self.config.get("output_dir", "").strip()
         raw_dir = out_dir_custom if (out_dir_custom and os.path.isdir(out_dir_custom)) \
@@ -166,16 +136,25 @@ class A1DProcessor(QThread):
         self.page.set_default_timeout(30_000)
         self.log("🎮 Playwright Chromium siap", "INFO")
 
+        # --> NEW MAIL LOGIC HERE <--
+        self.prog(5, "Membuka mailticking untuk temp email...")
+        self.mail_page = context.new_page()
+        mail_client = MailtickingClient(self.mail_page, log_callback=self.log)
+        email = mail_client.open_mailticking()
+        self.log(f"Temp email: {email}", "SUCCESS")
+        self.prog(10, "Email siap")
+        # --> END NEW MAIL LOGIC <--
+
         self.prog(15, "Membuka halaman sign-in...")
+        self.page.bring_to_front()
         self.log(f"[1] Buka: {self.SIGNIN_URL}", "INFO")
         self.page.goto(self.SIGNIN_URL, wait_until="domcontentloaded")
         time.sleep(2.5)
 
-        self.prog(20, "Input email mask...")
+        self.prog(20, "Input email temp...")
         self._fill_email(email)
 
         self.prog(25, "Submit email...")
-        otp_request_time = int(time.time())
         self._click_submit()
 
         self.prog(30, "Menunggu form OTP...")
@@ -188,8 +167,6 @@ class A1DProcessor(QThread):
         #   Percobaan 2+: klik Resend (jika ada) ATAU restart sign-in,
         #                 bersihkan kolom, tunggu OTP baru, isi ulang
         # ────────────────────────────────────────────────────────
-        gmail = GmailOTPReader(self.base_dir)
-
         for attempt in range(1, MAX_OTP_RETRIES + 1):
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
@@ -199,7 +176,7 @@ class A1DProcessor(QThread):
                     f"⚠️ OTP gagal/salah — percobaan {attempt}/{MAX_OTP_RETRIES}...",
                     "WARNING",
                 )
-                # Coba klik Resend dulu; jika tidak ada, restart full sign-in
+                self.page.bring_to_front()
                 if self._try_resend_otp():
                     self.log("🔄 Resend OTP berhasil diklik", "INFO")
                 else:
@@ -208,25 +185,24 @@ class A1DProcessor(QThread):
                         "INFO",
                     )
                     self._restart_signin(email)
-                # Timestamp SETELAH trigger OTP baru agar Gmail reader
-                # hanya ambil email yang masuk setelah ini
-                otp_request_time = int(time.time())
 
             self.prog(
                 38,
-                f"Menunggu OTP dari Gmail... (percobaan {attempt}/{MAX_OTP_RETRIES})",
+                f"Menunggu OTP dari Mailticking... (percobaan {attempt}/{MAX_OTP_RETRIES})",
             )
-            otp = gmail.wait_for_otp(
-                sender          = "a1d.ai",
-                mask_email      = email,
-                after_timestamp = otp_request_time,
-                timeout         = 180,
-                interval        = 5,
-                log_callback    = lambda m, lv="INFO": self.log(f"[Gmail] {m}", lv),
-            )
+            
+            found = mail_client.wait_for_verification_email(timeout=180)
+            if not found:
+                raise TimeoutError("❌ Timeout — OTP email tidak diterima di mailticking.")
+                
+            otp = mail_client.extract_verification_code()
+            if not otp:
+                raise ValueError("❌ Gagal mengekstrak OTP dari email mailticking.")
+
             self.log(f"✅ OTP percobaan {attempt}: {otp}", "SUCCESS")
 
             self.prog(50, f"Memasukkan OTP (percobaan {attempt})...")
+            self.page.bring_to_front()
             self._clear_otp_inputs()   # ← bersihkan sisa OTP gagal sebelumnya
             self._fill_otp(otp)
 
@@ -285,6 +261,7 @@ class A1DProcessor(QThread):
     def _fill_email(self, email: str):
         EMAIL_SELS = [
             A1D_EMAIL_ID,
+            "#_R_4p5fiv9fkjb_-form-item",
             'input[placeholder="your@email.com"]',
             'input[type="email"]',
             'input[autocomplete="email"]',
@@ -323,6 +300,17 @@ class A1DProcessor(QThread):
         raise RuntimeError("❌ Input email tidak ditemukan")
 
     def _click_submit(self):
+        try:
+            # Menggunakan JS Path spesifik dari user: 2. kemudian tombol klik continue with emailnya adalah ini document.querySelector("body > div.bg-background.lg\\:bg-muted...
+            js_selector = "body > div.bg-background.lg\\:bg-muted\\/30.animate-in.fade-in.slide-in-from-top-16.zoom-in-95.flex.h-screen.flex-col.items-center.justify-center.gap-y-10.duration-1000.lg\\:gap-y-8 > div > form > button"
+            btn = self.page.locator(js_selector).first
+            if btn.is_visible(timeout=2_000):
+                btn.click()
+                time.sleep(1.5)
+                return
+        except Exception:
+            pass
+
         for text in ["continue with email", "continue", "send code", "sign in"]:
             try:
                 btn = self.page.get_by_role("button", name=text, exact=False)
@@ -344,6 +332,8 @@ class A1DProcessor(QThread):
     # ══ OTP ═══════════════════════════════════════════════════════════════════════════════
     def _wait_for_otp_form(self, timeout: int = 30):
         OTP_SELS = [
+            A1D_OTP_ID,
+            "#_r_0_-form-item",
             'input[autocomplete="one-time-code"]',
             'input[inputmode="numeric"]',
             'input[type="number"][maxlength="6"]',
@@ -370,6 +360,8 @@ class A1DProcessor(QThread):
         Dipanggil pada percobaan ke-2 dan seterusnya.
         """
         OTP_SELS = [
+            A1D_OTP_ID,
+            "#_r_0_-form-item",
             'input[autocomplete="one-time-code"]',
             'input[inputmode="numeric"]',
             'input[type="number"][maxlength="6"]',
@@ -457,6 +449,8 @@ class A1DProcessor(QThread):
 
     def _fill_otp(self, otp: str):
         OTP_SELS = [
+            A1D_OTP_ID,
+            "#_r_0_-form-item",
             'input[autocomplete="one-time-code"]',
             'input[inputmode="numeric"]',
             'input[type="number"][maxlength="6"]',
@@ -486,15 +480,27 @@ class A1DProcessor(QThread):
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
             clicked = False
-            for text in ["verify", "continue", "submit"]:
-                try:
-                    btn = self.page.get_by_role("button", name=text, exact=False)
-                    if btn.first.is_visible(timeout=1_500):
-                        btn.first.click()
-                        clicked = True
-                        break
-                except Exception:
-                    continue
+            
+            try:
+                # 5. button verify code otp JS path:
+                js_selector = "body > div.bg-background.lg\\:bg-muted\\/30.animate-in.fade-in.slide-in-from-top-16.zoom-in-95.flex.h-screen.flex-col.items-center.justify-center.gap-y-10.duration-1000.lg\\:gap-y-8 > div > form > div.flex.w-full.flex-col.gap-y-2 > button.focus-visible\\:ring-ring.inline-flex.items-center.justify-center.rounded-md.text-sm.font-medium.whitespace-nowrap.transition-colors.focus-visible\\:ring-1.focus-visible\\:outline-hidden.disabled\\:pointer-events-none.disabled\\:opacity-50.bg-primary.text-primary-foreground.hover\\:bg-primary\\/90.shadow-xs.h-9.px-4.py-2"
+                btn = self.page.locator(js_selector).first
+                if btn.is_visible(timeout=1_500):
+                    btn.click()
+                    clicked = True
+            except Exception:
+                pass
+            
+            if not clicked:
+                for text in ["verify", "continue", "submit"]:
+                    try:
+                        btn = self.page.get_by_role("button", name=text, exact=False)
+                        if btn.first.is_visible(timeout=1_500):
+                            btn.first.click()
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
             if not clicked:
                 try:
                     self.page.locator("button[type='submit']").first.click()
@@ -526,9 +532,20 @@ class A1DProcessor(QThread):
             time.sleep(1)
         self.log(f"⚠️ Timeout /home — {self.page.url}", "WARNING")
 
-    # ══ UPLOAD ══════════════════════════════════════════════════════════════════════════════
     def _upload_video(self):
         abs_path = os.path.abspath(self.video_path)
+        
+        # 6. kolom drag/upload video JS Path: '#files\:_R_lbsnpfiv9fkjb_\:trigger > div' - We replace specific ids as it seems generated `_R_lbsnpfiv...` but let's try strict matching too if it's constant
+        try:
+            # Coba cari ID yang spesifik di share user:
+            trigger_loc = self.page.locator("id*='trigger'").locator("..").locator('input[type="file"]')
+            if trigger_loc.count() > 0:
+                trigger_loc.first.set_input_files(abs_path)
+                self.log("✅ File diupload via dynamic trigger ID", "SUCCESS")
+                return
+        except Exception:
+            pass
+
         try:
             file_input = self.page.locator('input[type="file"]').first
             file_input.set_input_files(abs_path)
@@ -569,6 +586,19 @@ class A1DProcessor(QThread):
             if found:
                 break
             time.sleep(0.5)
+
+        # 7. tombol ganti 4k JS Path user:
+        try:
+            js_selector = "body > div.flex.min-h-\\[100vh\\].flex-col > div.flex.h-\\[calc\\(100vh-72px\\)\\].w-full.flex-nowrap.gap-4 > div.mx-auto.h-full.w-full.max-w-md.min-w-\\[480px\\].space-y-6.overflow-y-auto.p-6 > div.space-y-5.rounded-xl.border.border-gray-200.bg-white.p-5.shadow-sm.dark\\:border-gray-800.dark\\:bg-gray-900 > div:nth-child(6) > div > button:nth-child(3)"
+            btn = self.page.locator(js_selector).first
+            if q == "4k" and btn.is_visible(timeout=1000):
+                btn.click()
+                self.log(f"✅ {q.upper()} via user JS_Path", "SUCCESS")
+                time.sleep(0.5)
+                return
+        except Exception:
+            pass
+
         for text in texts:
             for role in ["radio", "button"]:
                 try:
@@ -628,6 +658,19 @@ class A1DProcessor(QThread):
 
     # ══ START UPSCALE ═══════════════════════════════════════════════════════════
     def _start_upscale(self):
+        # 8. button untuk generate upscale JS path user:
+        try:
+            js_selector = "body > div.flex.min-h-\\[100vh\\].flex-col > div.flex.h-\\[calc\\(100vh-72px\\)\\].w-full.flex-nowrap.gap-4 > div.mx-auto.h-full.w-full.max-w-md.min-w-\\[480px\\].space-y-6.overflow-y-auto.p-6 > div.space-y-3 > button"
+            btn = self.page.locator(js_selector).first
+            if btn.is_visible(timeout=1_500) and btn.is_enabled():
+                btn.scroll_into_view_if_needed()
+                btn.click()
+                self.log("✅ Upscale via JS Path user", "INFO")
+                time.sleep(2)
+                return
+        except Exception:
+            pass
+
         for text in ["Generate", "Upscale", "Enhance", "Start", "Process"]:
             try:
                 btn = self.page.get_by_role("button", name=text, exact=False)
@@ -674,6 +717,7 @@ class A1DProcessor(QThread):
         last_disabled_log = 0
 
         DL_LOCATORS = [
+            "body > div.flex.min-h-\\[100vh\\].flex-col > div.flex.h-\\[calc\\(100vh-72px\\)\\].w-full.flex-nowrap.gap-4 > div.flex.w-full.flex-col.gap-2.overflow-y-auto > div > div > div.items-center.p-6.flex.justify-between.px-4.py-2 > div:nth-child(1)",
             "//button[normalize-space(.)='Download' or contains(normalize-space(.),'Download')]",
             "//a[contains(normalize-space(.),'Download') or contains(@href,'.mp4')]",
         ]
@@ -683,9 +727,13 @@ class A1DProcessor(QThread):
                 raise InterruptedError("Dibatalkan")
 
             dl_btn = None
-            for xpath in DL_LOCATORS:
+            for sel in DL_LOCATORS:
                 try:
-                    loc = self.page.locator(f"xpath={xpath}").first
+                    if sel.startswith("//"):
+                        loc = self.page.locator(f"xpath={sel}").first
+                    else:
+                        loc = self.page.locator(sel).first
+                        
                     if loc.is_visible(timeout=500):
                         dl_btn = loc
                         break

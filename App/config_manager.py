@@ -10,7 +10,6 @@ DEFAULT_CONFIG = {
     "headless": True,
     "processing_hang_timeout": 1800,
     "download_timeout": 600,
-    "relay_api_key": "",
     "a1d_url": "https://a1d.ai",
     "log_max_lines": 500,
     "batch_size": 1,
@@ -38,22 +37,6 @@ def get_user_data_dir() -> str:
 
 def _config_path() -> str:
     return os.path.join(get_user_data_dir(), "config.json")
-
-
-def get_gmail_token_paths(base_dir: str) -> list:
-    """
-    Kembalikan semua kemungkinan path token Gmail yang perlu dihapus
-    saat user menekan 'Reset Gmail Token'.
-    """
-    names = ["token.json", "gmail_token.json", "credentials_token.json", "gmail_credentials.json"]
-    dirs  = [base_dir, get_user_data_dir()]
-    paths = []
-    for d in dirs:
-        for n in names:
-            p = os.path.join(d, n)
-            if p not in paths:
-                paths.append(p)
-    return paths
 
 
 def load_config(base_dir: str) -> dict:

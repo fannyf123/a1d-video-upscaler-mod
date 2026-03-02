@@ -10,9 +10,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 
-from App.config_manager import load_config, save_config, get_user_data_dir, get_gmail_token_paths
+from App.config_manager import load_config, save_config, get_user_data_dir
 from App.file_processor import is_valid_video
-from App.firefox_relay import FirefoxRelay
 from App.background_process import A1DProcessor
 
 # ── Color Palette ────────────────────────────────────────────────────────────────
@@ -160,24 +159,7 @@ class SettingsDialog(QDialog):
         info_lbl.setWordWrap(True)
         lay.addWidget(info_lbl)
 
-        # ─ Firefox Relay ─
-        lay.addWidget(self._section("Firefox Relay"))
-        lay.addWidget(QLabel("🦊  Firefox Relay API Key"))
-        self.inp_key = QLineEdit(config.get("relay_api_key", ""))
-        self.inp_key.setPlaceholderText("Paste API Key dari relay.firefox.com/accounts/profile/")
-        self.inp_key.setEchoMode(QLineEdit.Password)
-        lay.addWidget(self.inp_key)
 
-        row_key = QHBoxLayout()
-        btn_show = QPushButton("👁  Tampilkan Key")
-        btn_show.setObjectName("btn_secondary")
-        btn_show.clicked.connect(self._toggle_echo)
-        row_key.addWidget(btn_show)
-        btn_test = QPushButton("🔌  Test Koneksi")
-        btn_test.setObjectName("btn_secondary")
-        btn_test.clicked.connect(self._test_relay)
-        row_key.addWidget(btn_test)
-        lay.addLayout(row_key)
 
         # ─ Headless + Timeout ─
         lay.addWidget(self._section("Proses"))
@@ -189,21 +171,7 @@ class SettingsDialog(QDialog):
         self.inp_timeout = QLineEdit(str(config.get("processing_hang_timeout", 1800)))
         lay.addWidget(self.inp_timeout)
 
-        # ─ Gmail Token ─
-        lay.addWidget(self._section("Gmail Token"))
 
-        lbl_gmail_info = QLabel(
-            "📧  Hapus token jika terjadi error autentikasi Gmail "
-            "atau ingin mengganti akun Google."
-        )
-        lbl_gmail_info.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
-        lbl_gmail_info.setWordWrap(True)
-        lay.addWidget(lbl_gmail_info)
-
-        btn_reset_token = QPushButton("🗑  Reset Gmail Token")
-        btn_reset_token.setObjectName("btn_secondary")
-        btn_reset_token.clicked.connect(self._reset_gmail_token)
-        lay.addWidget(btn_reset_token)
 
         # ─ Save ─
         lay.addStretch()
@@ -221,60 +189,13 @@ class SettingsDialog(QDialog):
         )
         return lbl
 
-    def _toggle_echo(self):
-        self.inp_key.setEchoMode(
-            QLineEdit.Normal if self.inp_key.echoMode() == QLineEdit.Password
-            else QLineEdit.Password
-        )
-
-    def _test_relay(self):
-        key = self.inp_key.text().strip()
-        if not key:
-            QMessageBox.warning(self, "Error", "Masukkan API Key terlebih dahulu!"); return
-        relay = FirefoxRelay(key)
-        if relay.test_connection():
-            QMessageBox.information(self, "Sukses", "Koneksi Firefox Relay berhasil! ✅")
-        else:
-            QMessageBox.critical(self, "Gagal", "API Key tidak valid atau koneksi gagal. ❌")
-
-    def _reset_gmail_token(self):
-        token_paths = get_gmail_token_paths(self.base_dir)
-        deleted = []
-        failed  = []
-        for p in token_paths:
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                    deleted.append(p)
-                except Exception as e:
-                    failed.append(f"{p} — {e}")
-
-        if deleted:
-            msg = "Token berhasil dihapus:"
-            for p in deleted:
-                msg += f"\n  • {p}"
-            msg += "\n\nLogin Gmail akan diminta ulang pada proses berikutnya."
-            if failed:
-                msg += "\n\n⚠️ Gagal hapus:"
-                for p in failed:
-                    msg += f"\n  • {p}"
-            QMessageBox.information(self, "Token Dihapus", msg)
-        else:
-            QMessageBox.information(
-                self, "Tidak Ada Token",
-                "Tidak ada token Gmail yang ditemukan.\n"
-                "Login ulang akan diminta secara otomatis jika diperlukan."
-            )
-
     def _save(self):
-        self.config["relay_api_key"] = self.inp_key.text().strip()
         self.config["headless"]      = self.chk_headless.isChecked()
         try:
             self.config["processing_hang_timeout"] = int(self.inp_timeout.text())
         except ValueError:
             pass
         save_config(self.base_dir, self.config)
-        FirefoxRelay.save_key(self.base_dir, self.config["relay_api_key"])
         QMessageBox.information(self, "Tersimpan", "Pengaturan berhasil disimpan! ✅")
         self.accept()
 
@@ -328,7 +249,7 @@ class MainWindow(QMainWindow):
         hdr.addWidget(btn_settings)
         top_lay.addLayout(hdr)
 
-        sub = QLabel("Upscale otomatis via a1d.ai menggunakan Firefox Relay")
+        sub = QLabel("Upscale otomatis via a1d.ai menggunakan Mailticking Temp Mail")
         sub.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
         top_lay.addWidget(sub)
 
@@ -520,11 +441,7 @@ class MainWindow(QMainWindow):
     def _start(self):
         if not self.video_path:
             QMessageBox.warning(self, "Pilih Video", "Belum ada video yang dipilih!"); return
-        if not self.config.get("relay_api_key", "").strip():
-            QMessageBox.warning(
-                self, "API Key",
-                "Firefox Relay API Key belum diset!\nBuka Settings ⚙ terlebih dahulu."
-            ); return
+
 
         out_dir_custom = self.inp_out_dir.text().strip()
         self.config["output_dir"] = out_dir_custom
