@@ -51,22 +51,28 @@ echo         OK  -  Python 3.12 berhasil diinstall.
 :pip_setup
 echo         Patch ._pth untuk aktifkan site-packages...
 
-:: FIX 1: Direct patch untuk Python 3.12 (hardcoded, paling reliable)
+:: FIX KRITIS: gunakan /R (regex) dengan pola ^import site
+:: Ini mencocokkan hanya baris yang DIAWALI dengan "import site"
+:: sehingga baris default "#import site" (komentar) TIDAK ter-deteksi sebagai sudah aktif.
+::
+:: findstr /C:"import site"  ← SALAH: cocok juga dengan "#import site"
+:: findstr /R "^import site"  ← BENAR: hanya cocok jika baris dimulai dengan import
+
+:: Patch 1: langsung ke python312._pth (Python 3.12 hardcoded)
 if exist "%PY_DIR%\python312._pth" (
-    findstr /C:"import site" "%PY_DIR%\python312._pth" >nul 2>&1
+    findstr /R "^import site" "%PY_DIR%\python312._pth" >nul 2>&1
     if errorlevel 1 (
         echo import site>>"%PY_DIR%\python312._pth"
-        echo         Patched  -  python312._pth
+        echo         Patched  -  import site ditambahkan ke python312._pth
     ) else (
-        echo         OK  -  python312._pth sudah ter-patch.
+        echo         OK  -  import site sudah aktif di python312._pth
     )
 )
 
-:: FIX 2: Wildcard via pushd (wildcard TIDAK bisa expand dalam quoted path)
-:: pushd dulu ke folder python agar glob berjalan tanpa masalah spasi
+:: Patch 2: wildcard via pushd (tidak ada masalah spasi karena path relatif)
 pushd "%PY_DIR%"
 for %%f in (python3*._pth) do (
-    findstr /C:"import site" "%%f" >nul 2>&1
+    findstr /R "^import site" "%%f" >nul 2>&1
     if errorlevel 1 (
         echo import site>>"%%f"
         echo         Patched  -  %%f
@@ -82,8 +88,7 @@ if not errorlevel 1 (
 )
 
 :: Install pip via get-pip.py
-:: CATATAN: ensurepip TIDAK tersedia di Python embed (sengaja di-strip)
-:: get-pip.py adalah satu-satunya cara install pip di embedded Python
+:: CATATAN: ensurepip TIDAK tersedia di Python embed (sengaja di-strip oleh Python)
 echo         Download get-pip.py...
 powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', '%ROOT%get-pip.py')"
 if errorlevel 1 (
@@ -99,8 +104,7 @@ del "%ROOT%get-pip.py" 2>nul
 "%PY_EXE%" -m pip --version >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] pip tidak bisa dijalankan setelah install.
-    echo         Kemungkinan import site belum aktif di ._pth
-    echo         Solusi: hapus folder 'python\' lalu jalankan ulang Launcher.bat
+    echo         Hapus folder 'python\' lalu jalankan ulang Launcher.bat
     pause & exit /b 1
 )
 echo         OK  -  pip berhasil diinstall.
