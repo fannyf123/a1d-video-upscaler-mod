@@ -128,23 +128,24 @@ powershell -NoProfile -Command "& { try { $wc = New-Object Net.WebClient; $wc.Do
 
 :: Jika gagal, coba BtbN GitHub Releases (fallback)
 if not exist "%FF_ZIP%" (
-    echo         Sumber 2: github.com/BtbN/FFmpeg-Builds ^(win64-gpl~80 MB^)
+    echo         Sumber 2: github.com/BtbN/FFmpeg-Builds ^(win64-gpl ~80 MB^)
     powershell -NoProfile -Command "& { try { $wc = New-Object Net.WebClient; $wc.DownloadFile('https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', $env:FF_ZIP); Write-Host '         Download selesai.' } catch { Write-Host ('         [WARN] BtbN gagal: ' + $_.Exception.Message) } }"
 )
 
 if not exist "%FF_ZIP%" (
     echo  [WARN] Kedua sumber download gagal.
     echo         FFmpeg tidak terinstall  -  fitur post-processing dinonaktifkan.
-    echo         Pasang FFmpeg manual ^(https://ffmpeg.org/download.html^) agar fitur ini aktif.
+    echo         Pasang FFmpeg manual ^(https://ffmpeg.org/download.html^) lalu jalankan ulang.
     goto :launch
 )
 
 :: --- Ekstrak zip ke folder sementara --------------------------------
 echo         Mengekstrak arsip...
-powershell -NoProfile -Command "& { Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:FF_ZIP, $env:FF_TMP) }"
+powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:FF_ZIP, $env:FF_TMP)"
 
-:: --- Salin bin\ dari subfolder pertama ke ffmpeg\bin\ ---------------
-powershell -NoProfile -Command "& { $sub = Get-ChildItem $env:FF_TMP -Directory | Select-Object -First 1; if (!$sub) { Write-Host '  [ERROR] Struktur zip tidak dikenali'; exit 1 }; $src = Join-Path $sub.FullName 'bin'; $dst = Join-Path $env:FF_DIR 'bin'; if (!(Test-Path $dst)) { New-Item -ItemType Directory -Force -Path $dst | Out-Null }; Copy-Item (Join-Path $src '*') -Destination $dst -Recurse -Force; Write-Host '         Instalasi selesai.' }"
+:: --- Salin bin\ ke ffmpeg\bin\ ----------------------------------------
+:: FIX: gunakan '-not' bukan '!' agar tidak bentrok dengan EnableDelayedExpansion
+powershell -NoProfile -Command "$sub = Get-ChildItem $env:FF_TMP -Directory | Select-Object -First 1; if (-not $sub) { Write-Host '[ERROR] Struktur zip tidak dikenali'; exit 1 }; $src = Join-Path $sub.FullName 'bin'; $dst = Join-Path $env:FF_DIR 'bin'; if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Force -Path $dst | Out-Null }; Copy-Item (Join-Path $src '*') -Destination $dst -Recurse -Force; Write-Host '         Salin selesai.'"
 
 :: --- Bersihkan temp ------------------------------------------------
 if exist "%FF_TMP%" rd /s /q "%FF_TMP%" 2>nul
@@ -152,7 +153,7 @@ if exist "%FF_ZIP%" del "%FF_ZIP%" 2>nul
 
 if exist "%FF_EXE%" (
     echo         OK  -  FFmpeg portable berhasil diinstall.
-    echo         Path: %FF_DIR%\bin
+    echo         Path aktif: %FF_DIR%\bin
     set "PATH=%FF_DIR%\bin;%PATH%"
 ) else (
     echo  [WARN] FFmpeg gagal diinstall  -  post-processing dinonaktifkan.
