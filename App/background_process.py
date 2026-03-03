@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread, Signal
 
 from App.mailticking_pw import MailtickingClient
 from App.temp_cleanup import clean_temp_files
+from App.ffmpeg_postprocessor import FFmpegPostProcessor
 
 A1D_EMAIL_ID = "#_R_4p5fiv9fkjb_-form-item"
 A1D_OTP_ID = "#_r_0_-form-item"
@@ -53,7 +54,7 @@ class A1DProcessor(QThread):
     def log(self, msg, level="INFO"): self.log_signal.emit(msg, level)
     def prog(self, pct, msg=""):      self.progress_signal.emit(pct, msg)
 
-    # ══ MAIN RUN ═══════════════════════════════════════════════════════════════
+    # ══ MAIN RUN ═════════════════════════════════════════════════════
     def run(self):
         try:
             out = self._process()
@@ -91,7 +92,7 @@ class A1DProcessor(QThread):
         t.start()
         t.join(timeout=8)
 
-    # ══ CORE PROCESS ═══════════════════════════════════════════════════════════
+    # ══ CORE PROCESS ══════════════════════════════════════════════════
     def _process(self) -> str:
         self.log("Memulai proses upscale...", "INFO")
 
@@ -161,12 +162,12 @@ class A1DProcessor(QThread):
         self._wait_for_otp_form(timeout=30)
         self.log("✅ Form OTP terdeteksi", "SUCCESS")
 
-        # ────────────────────────────────────────────────────────
+        # ────────────────────────────────────────────────
         # OTP retry loop
         #   Percobaan 1: pakai OTP dari email pertama
         #   Percobaan 2+: klik Resend (jika ada) ATAU restart sign-in,
         #                 bersihkan kolom, tunggu OTP baru, isi ulang
-        # ────────────────────────────────────────────────────────
+        # ────────────────────────────────────────────────
         for attempt in range(1, MAX_OTP_RETRIES + 1):
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
@@ -214,7 +215,7 @@ class A1DProcessor(QThread):
                 raise RuntimeError(
                     f"❌ OTP gagal setelah {MAX_OTP_RETRIES} percobaan"
                 )
-        # ── end OTP retry loop ───────────────────────────────────────────────────
+        # ── end OTP retry loop ─────────────────────────────────────────────
         time.sleep(2)
 
         self.prog(65, "Menunggu login berhasil...")
@@ -255,64 +256,49 @@ class A1DProcessor(QThread):
         self.prog(88, "Menunggu proses selesai...")
         out_path = self._wait_and_download(out_dir)
 
-        # --- FFMPEG POST-PROCESSING FOR 4K MICROSTOCK ---
-        self.prog(95, "Memproses video dengan FFMPEG (4K Microstock, Mute Audio)...")
-        self.log("🎬 Memulai post-processing FFMPEG untuk 4K Microstock (H.264, Mute Audio)...", "INFO")
-        try:
-            import subprocess
-            base = os.path.splitext(os.path.basename(self.video_path))[0]
-            microstock_path = os.path.join(out_dir, f"{base}_microstock_4k.mp4")
-            
-            # FFMPEG arguments for 4K (3840x2160) scaling + padding if aspect ratio differs,
-            # libx264 high quality, yuv420p for compatibility, and muted audio (-an)
-            cmd = [
-                "ffmpeg", "-y", "-i", out_path,
-                "-vf", "scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2",
-                "-c:v", "libx264",
-                "-preset", "slow",
-                "-crf", "17",
-                "-pix_fmt", "yuv420p",
-                "-an",
-                microstock_path
-            ]
-            
-            startupinfo = None
-            if os.name == 'nt':
-                try:
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                except AttributeError:
-                    pass
-            
-            process = subprocess.run(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, 
-                text=True, 
-                startupinfo=startupinfo
+        # ── FFMPEG Post-Processing — Adobe Stock 4K Microstock ───────────────────────
+        # Menggunakan FFmpegPostProcessor (App/ffmpeg_postprocessor.py)
+        # Preset: adobe_stock_4k_h264  →  H.264 High Profile 5.2, 3840x2160,
+        #   yuv420p, CRF 18, slow, -movflags +faststart, MUTED (-an)
+        # ──────────────────────────────────────────────────────────────────────
+        ff_cfg = self.config.get("ffmpeg", {})
+        if ff_cfg.get("enabled", True):
+            self.prog(93, "🎬 FFMPEG: Adobe Stock 4K H.264 + Muted...")
+            self.log(
+                "🎬 FFMPEG Post-Processing — Adobe Stock 4K H.264 │ "
+                "High Profile 5.2 │ CRF 18 │ 3840x2160 │ yuv420p │ "
+                "faststart │ 🔇 Muted (-an)",
+                "INFO",
             )
-            
-            if process.returncode != 0:
-                self.log(f"⚠️ FFMPEG Error: {process.stderr}", "WARNING")
-            else:
-                self.log(f"✅ FFMPEG Selesai: {os.path.basename(microstock_path)}", "SUCCESS")
-                
-                # Hapus file upscaled asli untuk menghemat ruang (opsional tapi disarankan)
-                try:
-                    os.remove(out_path)
-                    self.log(f"🧹 Menghapus file original upscaled: {os.path.basename(out_path)}", "INFO")
-                except Exception as e:
-                    self.log(f"⚠️ Gagal menghapus file original: {e}", "WARNING")
-                
-                out_path = microstock_path
-        except Exception as e:
-            self.log(f"⚠️ Gagal menjalankan FFMPEG: {e}", "WARNING")
-        # ------------------------------------------------
+            # Bangun config khusus run ini:
+            # - Paksa preset adobe_stock_4k_h264 dan mute_audio=True
+            # - replace_original baca dari config (default True → file A1D diganti)
+            run_cfg = dict(self.config)
+            run_cfg["ffmpeg"] = {
+                **ff_cfg,
+                "preset_name":      "adobe_stock_4k_h264",
+                "mute_audio":       True,
+                "replace_original": ff_cfg.get("replace_original", True),
+            }
+            ff = FFmpegPostProcessor(
+                input_path   = out_path,
+                config       = run_cfg,
+                log_fn       = self.log,
+                progress_fn  = self.prog,
+                cancelled_fn = lambda: self._cancelled,
+            )
+            ok, out_path = ff.run()
+            if not ok:
+                self.log(
+                    "⚠️ FFMPEG post-processing gagal — file A1D original tetap digunakan",
+                    "WARNING",
+                )
+        # ──────────────────────────────────────────────────────────────────────
 
         self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
         return out_path
 
-    # ══ EMAIL ══════════════════════════════════════════════════════════════════════════════
+    # ══ EMAIL ════════════════════════════════════════════════════════════════════════════════
     def _fill_email(self, email: str):
         EMAIL_SELS = [
             A1D_EMAIL_ID,
@@ -384,7 +370,7 @@ class A1DProcessor(QThread):
         self.page.keyboard.press("Enter")
         time.sleep(1.5)
 
-    # ══ OTP ═══════════════════════════════════════════════════════════════════════════════
+    # ══ OTP ═══════════════════════════════════════════════════════════════════════════════════
     def _wait_for_otp_form(self, timeout: int = 30):
         OTP_SELS = [
             A1D_OTP_ID,
@@ -619,7 +605,7 @@ class A1DProcessor(QThread):
                 continue
         raise RuntimeError("❌ Upload area tidak ditemukan")
 
-    # ══ QUALITY SELECTION ═════════════════════════════════════════════════════════
+    # ══ QUALITY SELECTION ════════════════════════════════════════════════════
     def _select_quality(self, quality: str):
         q     = quality.lower().strip()
         texts = QUALITY_TEXTS.get(q, QUALITY_TEXTS["4k"])
@@ -711,7 +697,7 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"_debug_dump_quality: {e}", "INFO")
 
-    # ══ START UPSCALE ═══════════════════════════════════════════════════════════
+    # ══ START UPSCALE ════════════════════════════════════════════════════
     def _start_upscale(self):
         # 8. button untuk generate upscale JS path user:
         try:
@@ -754,7 +740,7 @@ class A1DProcessor(QThread):
         if result and result.startswith("clicked:"):
             self.log(f"✅ Upscale (JS): {result}", "INFO")
 
-    # ══ WAIT & DOWNLOAD ═══════════════════════════════════════════════════════════
+    # ══ WAIT & DOWNLOAD ════════════════════════════════════════════════════
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
