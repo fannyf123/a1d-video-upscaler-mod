@@ -34,6 +34,15 @@ class A1DProcessor(QThread):
 
     _DEFAULT_BASE = "https://a1d.ai"
 
+    # Domain tracking/analytics yang selalu diblokir di semua halaman
+    _TRACKING_KEYWORDS = [
+        "google-analytics", "googletagmanager", "gtag/js", "gtm.js",
+        "hotjar", "mixpanel", "segment.com", "doubleclick",
+        "facebook.net", "fbcdn", "clarity.ms", "intercom",
+        "crisp.chat", "zendesk", "sentry.io", "bugsnag",
+        "newrelic", "datadog", "amplitude", "heap.io",
+    ]
+
     def __init__(self, base_dir: str, video_path: str, config: dict):
         super().__init__()
         self.base_dir   = base_dir
@@ -54,7 +63,7 @@ class A1DProcessor(QThread):
     def log(self, msg, level="INFO"): self.log_signal.emit(msg, level)
     def prog(self, pct, msg=""):      self.progress_signal.emit(pct, msg)
 
-    # ══ MAIN RUN ═════════════════════════════════════════════════════
+    # ══ MAIN RUN ══════════════════════════════════════
     def run(self):
         try:
             out = self._process()
@@ -92,7 +101,119 @@ class A1DProcessor(QThread):
         t.start()
         t.join(timeout=8)
 
-    # ══ CORE PROCESS ══════════════════════════════════════════════════
+    # ══ CHROME ARGS ══════════════════════════════════════
+    def _build_chrome_args(self) -> list:
+        """
+        Chrome flags untuk hemat RAM & CPU saat banyak worker berjalan paralel.
+        Setiap worker punya 1 browser sendiri + 2 page (A1D + mail),
+        sehingga efisiensi per-browser sangat berpengaruh ke total resource.
+        """
+        return [
+            # === Anti-bot detection ===
+            "--disable-blink-features=AutomationControlled",
+
+            # === Sandbox & shared memory ===
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+
+            # === GPU / render (tidak dibutuhkan untuk headless automation) ===
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-accelerated-2d-canvas",
+            "--disable-accelerated-video-decode",
+            "--disable-accelerated-video-encode",
+            "--disable-gl-drawing-for-tests",
+
+            # === Audio (tidak dibutuhkan) ===
+            "--mute-audio",
+            "--disable-features=AudioServiceOutOfProcess",
+
+            # === Batasi renderer process: 2 per worker (1 A1D + 1 mail) ===
+            # Setiap Chrome browser default bisa spawn banyak renderer process.
+            # Dengan 5 worker × default renderer = RAM meledak.
+            "--renderer-process-limit=2",
+
+            # === Batasi V8 JS heap per renderer ke 256 MB ===
+            # Default Chrome bisa allocate 1.5 GB+ per renderer.
+            # 256 MB cukup untuk rendering halaman web biasa.
+            "--js-flags=--max-old-space-size=256 --gc-interval=1000",
+
+            # === Matikan layanan Chrome yang tidak diperlukan ===
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-default-apps",
+            "--disable-domain-reliability",
+            "--disable-extensions",
+            "--disable-features=TranslateUI,GlobalMediaControls,MediaRouter,"
+            "DialMediaRouteProvider,Translate,AutofillServerCommunication,"
+            "CertificateTransparencyComponentUpdater,OptimizationHints",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-renderer-backgrounding",
+            "--disable-sync",
+            "--disable-translate",
+            "--metrics-recording-only",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--use-mock-keychain",
+
+            # === Rendering minor savings ===
+            "--hide-scrollbars",
+            "--force-color-profile=srgb",
+            "--disable-partial-raster",
+        ]
+
+    # ══ RESOURCE BLOCKING ═════════════════════════════════
+    def _block_resources(self, page, block_images: bool = True):
+        """
+        Block resource tidak penting pada sebuah page untuk hemat RAM & bandwidth.
+
+        A1D page  (block_images=False):
+          - Tetap load gambar (mungkin diperlukan UI a1d.ai)
+          - Blokir font, media, manifest, tracking domains
+
+        Mail page (block_images=True):
+          - Blokir gambar + font + media + manifest + tracking
+          - OTP selalu berupa teks, bukan gambar
+        """
+        BLOCK_TYPES = {"media", "font", "other", "manifest"}
+        if block_images:
+            BLOCK_TYPES.add("image")
+
+        tracking = self._TRACKING_KEYWORDS
+
+        def handle_route(route):
+            try:
+                url = route.request.url
+                rt  = route.request.resource_type
+                # Blokir tracking/analytics di semua page
+                if any(kw in url for kw in tracking):
+                    route.abort()
+                    return
+                # Blokir tipe resource yang tidak diperlukan
+                if rt in BLOCK_TYPES:
+                    route.abort()
+                    return
+                route.continue_()
+            except Exception:
+                try:
+                    route.continue_()
+                except Exception:
+                    pass
+
+        try:
+            page.route("**/*", handle_route)
+        except Exception:
+            pass  # Tidak kritis jika gagal setup route
+
+    # ══ CORE PROCESS ═══════════════════════════════════════
     def _process(self) -> str:
         self.log("Memulai proses upscale...", "INFO")
 
@@ -113,16 +234,13 @@ class A1DProcessor(QThread):
         self._browser = self._pw.chromium.launch(
             headless       = self.config.get("headless", True),
             downloads_path = out_dir,
-            args = [
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--mute-audio",
-                "--disable-gpu",
-            ],
+            args           = self._build_chrome_args(),
         )
         context = self._browser.new_context(
-            viewport         = {"width": 1920, "height": 1080},
+            # Viewport diperkecil dari 1920x1080 → 1280x800
+            # Compositor Chrome mengalokasikan framebuffer sesuai viewport;
+            # lebih kecil = lebih sedikit VRAM & RAM compositor per worker.
+            viewport         = {"width": 1280, "height": 800},
             user_agent       = (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -135,11 +253,19 @@ class A1DProcessor(QThread):
         )
         self.page = context.new_page()
         self.page.set_default_timeout(30_000)
-        self.log("🎮 Playwright Chromium siap", "INFO")
+        self.log("🎮 Playwright Chromium siap [low-memory mode]", "INFO")
 
         # --> NEW MAIL LOGIC HERE <--
         self.prog(5, "Membuka mailticking untuk temp email...")
         self.mail_page = context.new_page()
+
+        # ── Resource blocking per-page untuk hemat RAM/CPU ──────────────────
+        # A1D page : tetap load gambar (UI a1d.ai), blokir font/media/tracking
+        # Mail page: blokir semua kecuali script/doc/xhr (OTP selalu teks)
+        self._block_resources(self.page,      block_images=False)
+        self._block_resources(self.mail_page, block_images=True)
+        # ────────────────────────────────────────────────────────────────────
+
         mail_client = MailtickingClient(self.mail_page, log_callback=self.log)
         email = mail_client.open_mailticking()
         self.log(f"Temp email: {email}", "SUCCESS")
@@ -215,7 +341,7 @@ class A1DProcessor(QThread):
                 raise RuntimeError(
                     f"❌ OTP gagal setelah {MAX_OTP_RETRIES} percobaan"
                 )
-        # ── end OTP retry loop ─────────────────────────────────────────────
+        # ── end OTP retry loop ───────────────────────────────────────────────────────
         time.sleep(2)
 
         self.prog(65, "Menunggu login berhasil...")
@@ -257,10 +383,6 @@ class A1DProcessor(QThread):
         out_path = self._wait_and_download(out_dir)
 
         # ── FFMPEG Post-Processing — Adobe Stock 4K Microstock ───────────────────────
-        # Menggunakan FFmpegPostProcessor (App/ffmpeg_postprocessor.py)
-        # Preset: adobe_stock_4k_h264  →  H.264 High Profile 5.2, 3840x2160,
-        #   yuv420p, CRF 18, slow, -movflags +faststart, MUTED (-an)
-        # ──────────────────────────────────────────────────────────────────────
         ff_cfg = self.config.get("ffmpeg", {})
         if ff_cfg.get("enabled", True):
             self.prog(93, "🎬 FFMPEG: Adobe Stock 4K H.264 + Muted...")
@@ -270,9 +392,6 @@ class A1DProcessor(QThread):
                 "faststart │ 🔇 Muted (-an)",
                 "INFO",
             )
-            # Bangun config khusus run ini:
-            # - Paksa preset adobe_stock_4k_h264 dan mute_audio=True
-            # - replace_original baca dari config (default True → file A1D diganti)
             run_cfg = dict(self.config)
             run_cfg["ffmpeg"] = {
                 **ff_cfg,
@@ -293,12 +412,11 @@ class A1DProcessor(QThread):
                     "⚠️ FFMPEG post-processing gagal — file A1D original tetap digunakan",
                     "WARNING",
                 )
-        # ──────────────────────────────────────────────────────────────────────
 
         self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
         return out_path
 
-    # ══ EMAIL ════════════════════════════════════════════════════════════════════════════════
+    # ══ EMAIL ══════════════════════════════════════════════════════════════════════════════════
     def _fill_email(self, email: str):
         EMAIL_SELS = [
             A1D_EMAIL_ID,
@@ -342,7 +460,6 @@ class A1DProcessor(QThread):
 
     def _click_submit(self):
         try:
-            # Menggunakan JS Path spesifik dari user: 2. kemudian tombol klik continue with emailnya adalah ini document.querySelector("body > div.bg-background.lg\\:bg-muted...
             js_selector = "body > div.bg-background.lg\\:bg-muted\\/30.animate-in.fade-in.slide-in-from-top-16.zoom-in-95.flex.h-screen.flex-col.items-center.justify-center.gap-y-10.duration-1000.lg\\:gap-y-8 > div > form > button"
             btn = self.page.locator(js_selector).first
             if btn.is_visible(timeout=2_000):
@@ -370,7 +487,7 @@ class A1DProcessor(QThread):
         self.page.keyboard.press("Enter")
         time.sleep(1.5)
 
-    # ══ OTP ═══════════════════════════════════════════════════════════════════════════════════
+    # ══ OTP ═══════════════════════════════════════════════════════════════════════════════════════
     def _wait_for_otp_form(self, timeout: int = 30):
         OTP_SELS = [
             A1D_OTP_ID,
@@ -396,10 +513,6 @@ class A1DProcessor(QThread):
         raise TimeoutError("❌ Form OTP tidak muncul")
 
     def _clear_otp_inputs(self):
-        """
-        Bersihkan semua kolom input OTP sebelum mengisi OTP baru.
-        Dipanggil pada percobaan ke-2 dan seterusnya.
-        """
         OTP_SELS = [
             A1D_OTP_ID,
             "#_r_0_-form-item",
@@ -418,7 +531,6 @@ class A1DProcessor(QThread):
                     return
             except Exception:
                 continue
-        # Digit-by-digit inputs (maxlength="1")
         try:
             digits = self.page.locator('input[maxlength="1"]').all()
             for d in digits:
@@ -432,10 +544,6 @@ class A1DProcessor(QThread):
             pass
 
     def _try_resend_otp(self) -> bool:
-        """
-        Coba klik tombol/link Resend OTP di halaman OTP.
-        Return True jika berhasil diklik, False jika tidak ditemukan.
-        """
         RESEND_TEXTS = [
             "resend", "resend otp", "resend code", "resend email",
             "send again", "send new code", "resend verification",
@@ -452,7 +560,6 @@ class A1DProcessor(QThread):
                         return True
                 except Exception:
                     continue
-        # JS fallback: cari elemen yang teksnya mengandung 'resend'
         clicked = self.page.evaluate("""
             () => {
                 const kw = ['resend','send again','kirim ulang'];
@@ -476,10 +583,6 @@ class A1DProcessor(QThread):
         return False
 
     def _restart_signin(self, email: str):
-        """
-        Kembali ke halaman sign-in, isi ulang email,
-        dan tunggu sampai form OTP muncul kembali.
-        """
         self.log(f"🔄 Restart sign-in: {self.SIGNIN_URL}", "INFO")
         self.page.goto(self.SIGNIN_URL, wait_until="domcontentloaded")
         time.sleep(2.5)
@@ -523,7 +626,6 @@ class A1DProcessor(QThread):
             clicked = False
             
             try:
-                # 5. button verify code otp JS path:
                 js_selector = "body > div.bg-background.lg\\:bg-muted\\/30.animate-in.fade-in.slide-in-from-top-16.zoom-in-95.flex.h-screen.flex-col.items-center.justify-center.gap-y-10.duration-1000.lg\\:gap-y-8 > div > form > div.flex.w-full.flex-col.gap-y-2 > button.focus-visible\\:ring-ring.inline-flex.items-center.justify-center.rounded-md.text-sm.font-medium.whitespace-nowrap.transition-colors.focus-visible\\:ring-1.focus-visible\\:outline-hidden.disabled\\:pointer-events-none.disabled\\:opacity-50.bg-primary.text-primary-foreground.hover\\:bg-primary\\/90.shadow-xs.h-9.px-4.py-2"
                 btn = self.page.locator(js_selector).first
                 if btn.is_visible(timeout=1_500):
@@ -576,9 +678,7 @@ class A1DProcessor(QThread):
     def _upload_video(self):
         abs_path = os.path.abspath(self.video_path)
         
-        # 6. kolom drag/upload video JS Path: '#files\:_R_lbsnpfiv9fkjb_\:trigger > div' - We replace specific ids as it seems generated `_R_lbsnpfiv...` but let's try strict matching too if it's constant
         try:
-            # Coba cari ID yang spesifik di share user:
             trigger_loc = self.page.locator("id*='trigger'").locator("..").locator('input[type="file"]')
             if trigger_loc.count() > 0:
                 trigger_loc.first.set_input_files(abs_path)
@@ -605,7 +705,7 @@ class A1DProcessor(QThread):
                 continue
         raise RuntimeError("❌ Upload area tidak ditemukan")
 
-    # ══ QUALITY SELECTION ════════════════════════════════════════════════════
+    # ══ QUALITY SELECTION ═════════════════════════════════════════
     def _select_quality(self, quality: str):
         q     = quality.lower().strip()
         texts = QUALITY_TEXTS.get(q, QUALITY_TEXTS["4k"])
@@ -628,7 +728,6 @@ class A1DProcessor(QThread):
                 break
             time.sleep(0.5)
 
-        # 7. tombol ganti 4k JS Path user:
         try:
             js_selector = "body > div.flex.min-h-\\[100vh\\].flex-col > div.flex.h-\\[calc\\(100vh-72px\\)\\].w-full.flex-nowrap.gap-4 > div.mx-auto.h-full.w-full.max-w-md.min-w-\\[480px\\].space-y-6.overflow-y-auto.p-6 > div.space-y-5.rounded-xl.border.border-gray-200.bg-white.p-5.shadow-sm.dark\\:border-gray-800.dark\\:bg-gray-900 > div:nth-child(6) > div > button:nth-child(3)"
             btn = self.page.locator(js_selector).first
@@ -697,9 +796,8 @@ class A1DProcessor(QThread):
         except Exception as e:
             self.log(f"_debug_dump_quality: {e}", "INFO")
 
-    # ══ START UPSCALE ════════════════════════════════════════════════════
+    # ══ START UPSCALE ══════════════════════════════════════════
     def _start_upscale(self):
-        # 8. button untuk generate upscale JS path user:
         try:
             js_selector = "body > div.flex.min-h-\\[100vh\\].flex-col > div.flex.h-\\[calc\\(100vh-72px\\)\\].w-full.flex-nowrap.gap-4 > div.mx-auto.h-full.w-full.max-w-md.min-w-\\[480px\\].space-y-6.overflow-y-auto.p-6 > div.space-y-3 > button"
             btn = self.page.locator(js_selector).first
@@ -740,7 +838,7 @@ class A1DProcessor(QThread):
         if result and result.startswith("clicked:"):
             self.log(f"✅ Upscale (JS): {result}", "INFO")
 
-    # ══ WAIT & DOWNLOAD ════════════════════════════════════════════════════
+    # ══ WAIT & DOWNLOAD ══════════════════════════════════════════
     def _build_output_path(self, out_dir: str, ext: str = ".mp4") -> str:
         base    = os.path.splitext(os.path.basename(self.video_path))[0]
         quality = self.config.get("output_quality", "4k")
