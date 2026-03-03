@@ -45,15 +45,6 @@ class A1DProcessor(QThread):
 
     _DEFAULT_BASE = "https://a1d.ai"
 
-    # Domain tracking/analytics yang selalu diblokir di semua halaman
-    _TRACKING_KEYWORDS = [
-        "google-analytics", "googletagmanager", "gtag/js", "gtm.js",
-        "hotjar", "mixpanel", "segment.com", "doubleclick",
-        "facebook.net", "fbcdn", "clarity.ms", "intercom",
-        "crisp.chat", "zendesk", "sentry.io", "bugsnag",
-        "newrelic", "datadog", "amplitude", "heap.io",
-    ]
-
     def __init__(self, base_dir: str, video_path: str, config: dict):
         super().__init__()
         self.base_dir   = base_dir
@@ -111,80 +102,6 @@ class A1DProcessor(QThread):
         t.start()
         t.join(timeout=8)
 
-    # ══ CHROME ARGS ══════════════════════════════════════
-    def _build_chrome_args(self) -> list:
-        return [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-            "--disable-accelerated-2d-canvas",
-            "--disable-accelerated-video-decode",
-            "--disable-accelerated-video-encode",
-            "--disable-gl-drawing-for-tests",
-            "--mute-audio",
-            "--disable-features=AudioServiceOutOfProcess",
-            "--renderer-process-limit=2",
-            "--js-flags=--max-old-space-size=256 --gc-interval=1000",
-            "--disable-background-networking",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-breakpad",
-            "--disable-client-side-phishing-detection",
-            "--disable-component-extensions-with-background-pages",
-            "--disable-default-apps",
-            "--disable-domain-reliability",
-            "--disable-extensions",
-            "--disable-features=TranslateUI,GlobalMediaControls,MediaRouter,"
-            "DialMediaRouteProvider,Translate,AutofillServerCommunication,"
-            "CertificateTransparencyComponentUpdater,OptimizationHints",
-            "--disable-hang-monitor",
-            "--disable-ipc-flooding-protection",
-            "--disable-popup-blocking",
-            "--disable-prompt-on-repost",
-            "--disable-renderer-backgrounding",
-            "--disable-sync",
-            "--disable-translate",
-            "--metrics-recording-only",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--password-store=basic",
-            "--use-mock-keychain",
-            "--hide-scrollbars",
-            "--force-color-profile=srgb",
-            "--disable-partial-raster",
-        ]
-
-    # ══ RESOURCE BLOCKING ═════════════════════════════════
-    def _block_resources(self, page, block_images: bool = True):
-        BLOCK_TYPES = {"media", "font", "other", "manifest"}
-        if block_images:
-            BLOCK_TYPES.add("image")
-        tracking = self._TRACKING_KEYWORDS
-
-        def handle_route(route):
-            try:
-                url = route.request.url
-                rt  = route.request.resource_type
-                if any(kw in url for kw in tracking):
-                    route.abort()
-                    return
-                if rt in BLOCK_TYPES:
-                    route.abort()
-                    return
-                route.continue_()
-            except Exception:
-                try:
-                    route.continue_()
-                except Exception:
-                    pass
-
-        try:
-            page.route("**/*", handle_route)
-        except Exception:
-            pass
-
     # ══ CORE PROCESS ═══════════════════════════════════════
     def _process(self) -> str:
         self.log("Memulai proses upscale...", "INFO")
@@ -205,10 +122,16 @@ class A1DProcessor(QThread):
         self._browser = self._pw.chromium.launch(
             headless       = self.config.get("headless", True),
             downloads_path = out_dir,
-            args           = self._build_chrome_args(),
+            args = [
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--mute-audio",
+                "--disable-gpu",
+            ],
         )
         context = self._browser.new_context(
-            viewport         = {"width": 1280, "height": 800},
+            viewport         = {"width": 1920, "height": 1080},
             user_agent       = (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -221,13 +144,10 @@ class A1DProcessor(QThread):
         )
         self.page = context.new_page()
         self.page.set_default_timeout(30_000)
-        self.log("🎮 Playwright Chromium siap [low-memory mode]", "INFO")
+        self.log("🎮 Playwright Chromium siap", "INFO")
 
         self.prog(5, "Membuka mailticking untuk temp email...")
         self.mail_page = context.new_page()
-        self._block_resources(self.page,      block_images=False)
-        self._block_resources(self.mail_page, block_images=True)
-
         mail_client = MailtickingClient(self.mail_page, log_callback=self.log)
         email = mail_client.open_mailticking()
         self.log(f"Temp email: {email}", "SUCCESS")
@@ -645,7 +565,7 @@ class A1DProcessor(QThread):
                     actual = loc.input_value()
                     if actual == otp:
                         return True, actual
-                    if actual:  # Ada nilai tapi beda — catat
+                    if actual:
                         return False, actual
             except Exception:
                 continue
@@ -679,7 +599,6 @@ class A1DProcessor(QThread):
                     const el = document.querySelector(s);
                     if (el && el.offsetParent && el.value) return el.value;
                 }
-                // digit-by-digit
                 const digs = [...document.querySelectorAll('input[maxlength="1"]')];
                 if (digs.length >= otp.length) {
                     return digs.slice(0, otp.length).map(d => d.value).join('');
