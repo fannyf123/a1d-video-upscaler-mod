@@ -26,6 +26,17 @@ QUALITY_TEXTS = {
 
 MAX_OTP_RETRIES = 3   # total percobaan OTP (1 awal + 2 retry)
 
+# Semua selector yang mungkin berisi input OTP
+_OTP_INPUT_SELS = [
+    A1D_OTP_ID,
+    "#_r_0_-form-item",
+    'input[autocomplete="one-time-code"]',
+    'input[inputmode="numeric"]',
+    'input[type="number"][maxlength="6"]',
+    'input[type="text"][maxlength="6"]',
+    'input[placeholder*="code" i]',
+]
+
 
 class A1DProcessor(QThread):
     log_signal      = Signal(str, str)
@@ -53,7 +64,7 @@ class A1DProcessor(QThread):
         self._browser   = None
         self._cancelled = False
 
-        self._out_dir = ""   # set in _process(); used by _cleanup_temp_files()
+        self._out_dir = ""
 
         base = self.config.get("a1d_url", self._DEFAULT_BASE).rstrip("/")
         self.SIGNIN_URL = f"{base}/auth/sign-in"
@@ -77,7 +88,6 @@ class A1DProcessor(QThread):
             self._cleanup_temp_files()
 
     def _cleanup_temp_files(self):
-        """Delete leftover .tmp / .crdownload from the output directory."""
         if self._out_dir:
             clean_temp_files(self._out_dir, log_fn=self.log)
 
@@ -103,42 +113,20 @@ class A1DProcessor(QThread):
 
     # ══ CHROME ARGS ══════════════════════════════════════
     def _build_chrome_args(self) -> list:
-        """
-        Chrome flags untuk hemat RAM & CPU saat banyak worker berjalan paralel.
-        Setiap worker punya 1 browser sendiri + 2 page (A1D + mail),
-        sehingga efisiensi per-browser sangat berpengaruh ke total resource.
-        """
         return [
-            # === Anti-bot detection ===
             "--disable-blink-features=AutomationControlled",
-
-            # === Sandbox & shared memory ===
             "--no-sandbox",
             "--disable-dev-shm-usage",
-
-            # === GPU / render (tidak dibutuhkan untuk headless automation) ===
             "--disable-gpu",
             "--disable-software-rasterizer",
             "--disable-accelerated-2d-canvas",
             "--disable-accelerated-video-decode",
             "--disable-accelerated-video-encode",
             "--disable-gl-drawing-for-tests",
-
-            # === Audio (tidak dibutuhkan) ===
             "--mute-audio",
             "--disable-features=AudioServiceOutOfProcess",
-
-            # === Batasi renderer process: 2 per worker (1 A1D + 1 mail) ===
-            # Setiap Chrome browser default bisa spawn banyak renderer process.
-            # Dengan 5 worker × default renderer = RAM meledak.
             "--renderer-process-limit=2",
-
-            # === Batasi V8 JS heap per renderer ke 256 MB ===
-            # Default Chrome bisa allocate 1.5 GB+ per renderer.
-            # 256 MB cukup untuk rendering halaman web biasa.
             "--js-flags=--max-old-space-size=256 --gc-interval=1000",
-
-            # === Matikan layanan Chrome yang tidak diperlukan ===
             "--disable-background-networking",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
@@ -163,8 +151,6 @@ class A1DProcessor(QThread):
             "--no-default-browser-check",
             "--password-store=basic",
             "--use-mock-keychain",
-
-            # === Rendering minor savings ===
             "--hide-scrollbars",
             "--force-color-profile=srgb",
             "--disable-partial-raster",
@@ -172,32 +158,18 @@ class A1DProcessor(QThread):
 
     # ══ RESOURCE BLOCKING ═════════════════════════════════
     def _block_resources(self, page, block_images: bool = True):
-        """
-        Block resource tidak penting pada sebuah page untuk hemat RAM & bandwidth.
-
-        A1D page  (block_images=False):
-          - Tetap load gambar (mungkin diperlukan UI a1d.ai)
-          - Blokir font, media, manifest, tracking domains
-
-        Mail page (block_images=True):
-          - Blokir gambar + font + media + manifest + tracking
-          - OTP selalu berupa teks, bukan gambar
-        """
         BLOCK_TYPES = {"media", "font", "other", "manifest"}
         if block_images:
             BLOCK_TYPES.add("image")
-
         tracking = self._TRACKING_KEYWORDS
 
         def handle_route(route):
             try:
                 url = route.request.url
                 rt  = route.request.resource_type
-                # Blokir tracking/analytics di semua page
                 if any(kw in url for kw in tracking):
                     route.abort()
                     return
-                # Blokir tipe resource yang tidak diperlukan
                 if rt in BLOCK_TYPES:
                     route.abort()
                     return
@@ -211,7 +183,7 @@ class A1DProcessor(QThread):
         try:
             page.route("**/*", handle_route)
         except Exception:
-            pass  # Tidak kritis jika gagal setup route
+            pass
 
     # ══ CORE PROCESS ═══════════════════════════════════════
     def _process(self) -> str:
@@ -225,7 +197,6 @@ class A1DProcessor(QThread):
         self._out_dir = out_dir
         self.log(f"📁 Output: {out_dir}", "INFO")
 
-        # Clean leftover temp files from any previous failed run
         prev = clean_temp_files(out_dir)
         if prev:
             self.log(f"🧹 Hapus {prev} file temp sisa dari run sebelumnya", "INFO")
@@ -237,9 +208,6 @@ class A1DProcessor(QThread):
             args           = self._build_chrome_args(),
         )
         context = self._browser.new_context(
-            # Viewport diperkecil dari 1920x1080 → 1280x800
-            # Compositor Chrome mengalokasikan framebuffer sesuai viewport;
-            # lebih kecil = lebih sedikit VRAM & RAM compositor per worker.
             viewport         = {"width": 1280, "height": 800},
             user_agent       = (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -255,22 +223,15 @@ class A1DProcessor(QThread):
         self.page.set_default_timeout(30_000)
         self.log("🎮 Playwright Chromium siap [low-memory mode]", "INFO")
 
-        # --> NEW MAIL LOGIC HERE <--
         self.prog(5, "Membuka mailticking untuk temp email...")
         self.mail_page = context.new_page()
-
-        # ── Resource blocking per-page untuk hemat RAM/CPU ──────────────────
-        # A1D page : tetap load gambar (UI a1d.ai), blokir font/media/tracking
-        # Mail page: blokir semua kecuali script/doc/xhr (OTP selalu teks)
         self._block_resources(self.page,      block_images=False)
         self._block_resources(self.mail_page, block_images=True)
-        # ────────────────────────────────────────────────────────────────────
 
         mail_client = MailtickingClient(self.mail_page, log_callback=self.log)
         email = mail_client.open_mailticking()
         self.log(f"Temp email: {email}", "SUCCESS")
         self.prog(10, "Email siap")
-        # --> END NEW MAIL LOGIC <--
 
         self.prog(15, "Membuka halaman sign-in...")
         self.page.bring_to_front()
@@ -284,15 +245,19 @@ class A1DProcessor(QThread):
         self.prog(25, "Submit email...")
         self._click_submit()
 
+        # ────────────────────────────────────────────────
+        # Tunggu form OTP: dengan internal retry + reload sign-in
+        # jika form tidak muncul dalam timeout.
+        # ────────────────────────────────────────────────
         self.prog(30, "Menunggu form OTP...")
-        self._wait_for_otp_form(timeout=30)
-        self.log("✅ Form OTP terdeteksi", "SUCCESS")
+        self._wait_for_otp_form(timeout=30, email=email)
 
         # ────────────────────────────────────────────────
-        # OTP retry loop
-        #   Percobaan 1: pakai OTP dari email pertama
-        #   Percobaan 2+: klik Resend (jika ada) ATAU restart sign-in,
-        #                 bersihkan kolom, tunggu OTP baru, isi ulang
+        # OTP retry loop:
+        #  - Percobaan 1 : OTP dari email pertama
+        #  - Percobaan 2+: resend / restart sign-in,
+        #                  lalu KONFIRMASI form OTP muncul lagi
+        #                  sebelum isi OTP baru
         # ────────────────────────────────────────────────
         for attempt in range(1, MAX_OTP_RETRIES + 1):
             if self._cancelled:
@@ -313,15 +278,20 @@ class A1DProcessor(QThread):
                     )
                     self._restart_signin(email)
 
+                # Setelah resend/restart: konfirmasi form OTP terlihat lagi
+                # sebelum menunggu email OTP baru.
+                self.log("⏳ Konfirmasi form OTP kembali terlihat...", "INFO")
+                self._wait_for_otp_form(timeout=30, email=email)
+
             self.prog(
                 38,
                 f"Menunggu OTP dari Mailticking... (percobaan {attempt}/{MAX_OTP_RETRIES})",
             )
-            
+
             found = mail_client.wait_for_verification_email(timeout=180)
             if not found:
                 raise TimeoutError("❌ Timeout — OTP email tidak diterima di mailticking.")
-                
+
             otp = mail_client.extract_verification_code()
             if not otp:
                 raise ValueError("❌ Gagal mengekstrak OTP dari email mailticking.")
@@ -330,18 +300,22 @@ class A1DProcessor(QThread):
 
             self.prog(50, f"Memasukkan OTP (percobaan {attempt})...")
             self.page.bring_to_front()
-            self._clear_otp_inputs()   # ← bersihkan sisa OTP gagal sebelumnya
-            self._fill_otp(otp)
+
+            # Bersihkan input lama, lalu isi dan VALIDASI nilai OTP.
+            # _fill_and_validate_otp() akan retry hingga 3x jika nilai
+            # yang ter-input tidak sesuai sebelum raise.
+            self._clear_otp_inputs()
+            self._fill_and_validate_otp(otp)
 
             self.prog(58, "Submit OTP...")
             if self._click_otp_submit_and_verify():
-                break   # ✔ login berhasil, lanjut
+                break
 
             if attempt >= MAX_OTP_RETRIES:
                 raise RuntimeError(
                     f"❌ OTP gagal setelah {MAX_OTP_RETRIES} percobaan"
                 )
-        # ── end OTP retry loop ───────────────────────────────────────────────────────
+        # ── end OTP loop ─────────────────────────────────────────────────────
         time.sleep(2)
 
         self.prog(65, "Menunggu login berhasil...")
@@ -382,7 +356,6 @@ class A1DProcessor(QThread):
         self.prog(88, "Menunggu proses selesai...")
         out_path = self._wait_and_download(out_dir)
 
-        # ── FFMPEG Post-Processing — Adobe Stock 4K Microstock ───────────────────────
         ff_cfg = self.config.get("ffmpeg", {})
         if ff_cfg.get("enabled", True):
             self.prog(93, "🎬 FFMPEG: Adobe Stock 4K H.264 + Muted...")
@@ -416,7 +389,7 @@ class A1DProcessor(QThread):
         self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
         return out_path
 
-    # ══ EMAIL ══════════════════════════════════════════════════════════════════════════════════
+    # ══ EMAIL ═════════════════════════════════════════════════════════════════════
     def _fill_email(self, email: str):
         EMAIL_SELS = [
             A1D_EMAIL_ID,
@@ -468,7 +441,6 @@ class A1DProcessor(QThread):
                 return
         except Exception:
             pass
-
         for text in ["continue with email", "continue", "send code", "sign in"]:
             try:
                 btn = self.page.get_by_role("button", name=text, exact=False)
@@ -487,42 +459,240 @@ class A1DProcessor(QThread):
         self.page.keyboard.press("Enter")
         time.sleep(1.5)
 
-    # ══ OTP ═══════════════════════════════════════════════════════════════════════════════════════
-    def _wait_for_otp_form(self, timeout: int = 30):
-        OTP_SELS = [
-            A1D_OTP_ID,
-            "#_r_0_-form-item",
-            'input[autocomplete="one-time-code"]',
-            'input[inputmode="numeric"]',
-            'input[type="number"][maxlength="6"]',
-            'input[type="text"][maxlength="6"]',
-            'input[maxlength="1"]',
-            'input[placeholder*="code" i]',
-        ]
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+    # ══ OTP: WAIT FOR FORM ═══════════════════════════════════════════
+    def _wait_for_otp_form(self, timeout: int = 30, email: str = ""):
+        """
+        Tunggu form OTP muncul dengan internal retry + auto-reload sign-in.
+
+        Flow:
+          Untuk setiap percobaan (max MAX_OTP_RETRIES):
+            1. Poll selector OTP selama `timeout` detik.
+            2. Jika ditemukan → return (sukses).
+            3. Jika timeout:
+               - Jika masih ada percobaan tersisa:
+                 reload sign-in, isi email, klik submit, coba lagi.
+               - Jika percobaan habis: raise TimeoutError.
+        """
+        for form_attempt in range(1, MAX_OTP_RETRIES + 1):
+            deadline   = time.time() + timeout
+            found_sel  = None
+
+            self.log(
+                f"🔍 Menunggu form OTP... "
+                f"(percobaan {form_attempt}/{MAX_OTP_RETRIES}, timeout {timeout}s)",
+                "INFO",
+            )
+
+            while time.time() < deadline:
+                if self._cancelled:
+                    raise InterruptedError("Dibatalkan")
+                for sel in _OTP_INPUT_SELS:
+                    try:
+                        if self.page.locator(sel).first.is_visible(timeout=500):
+                            found_sel = sel
+                            break
+                    except Exception:
+                        continue
+                if found_sel:
+                    break
+                time.sleep(0.8)
+
+            if found_sel:
+                self.log(f"✅ Form OTP terdeteksi via: {found_sel}", "SUCCESS")
+                return
+
+            # Timeout pada percobaan ini
+            if form_attempt < MAX_OTP_RETRIES:
+                self.log(
+                    f"⚠️ Form OTP tidak muncul dalam {timeout}s "
+                    f"(percobaan {form_attempt}/{MAX_OTP_RETRIES}) — "
+                    f"reload halaman sign-in dan coba lagi...",
+                    "WARNING",
+                )
+                try:
+                    self.page.goto(self.SIGNIN_URL, wait_until="domcontentloaded")
+                    time.sleep(2.5)
+                    if email:
+                        self._fill_email(email)
+                        time.sleep(0.5)
+                        self._click_submit()
+                        time.sleep(1.5)
+                except Exception as e:
+                    self.log(f"⚠️ Reload sign-in error: {e}", "WARNING")
+            else:
+                raise TimeoutError(
+                    f"❌ Form OTP tidak muncul setelah {MAX_OTP_RETRIES} percobaan "
+                    f"({MAX_OTP_RETRIES * timeout}s total). "
+                    f"Kemungkinan: koneksi lambat, a1d.ai down, atau halaman gagal load."
+                )
+
+    # ══ OTP: FILL + VALIDATE ════════════════════════════════════════
+    def _fill_and_validate_otp(self, otp: str, max_attempts: int = 3):
+        """
+        Isi form OTP lalu validasi bahwa nilai yang ter-input benar-benar sesuai.
+        Retry hingga max_attempts kali jika nilai tidak sesuai.
+        Raise RuntimeError jika semua percobaan gagal.
+        """
+        for attempt in range(1, max_attempts + 1):
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
-            for sel in OTP_SELS:
-                try:
-                    if self.page.locator(sel).first.is_visible(timeout=500):
-                        return
-                except Exception:
-                    continue
-            time.sleep(0.8)
-        raise TimeoutError("❌ Form OTP tidak muncul")
 
+            if attempt > 1:
+                self.log(
+                    f"🔄 Retry isi OTP percobaan {attempt}/{max_attempts}...",
+                    "WARNING",
+                )
+                self._clear_otp_inputs()
+                time.sleep(0.4)
+
+            filled_via = self._do_fill_otp(otp)
+            if not filled_via:
+                self.log(
+                    f"⚠️ Input OTP tidak ditemukan di DOM (percobaan {attempt}/{max_attempts})",
+                    "WARNING",
+                )
+                time.sleep(0.6)
+                continue
+
+            self.log(f"   Terisi via: {filled_via}", "INFO")
+
+            # Beri waktu React/DOM update sebelum validasi
+            time.sleep(0.3)
+
+            valid, actual = self._validate_otp_input(otp)
+            if valid:
+                self.log(f"✅ OTP tervalidasi: '{otp}' ✔", "SUCCESS")
+                return
+
+            self.log(
+                f"⚠️ Validasi OTP gagal percobaan {attempt}/{max_attempts} — "
+                f"diisi: '{otp}', terbaca: '{actual}'",
+                "WARNING",
+            )
+
+        raise RuntimeError(
+            f"❌ Gagal mengisi OTP '{otp}' setelah {max_attempts} percobaan — "
+            f"nilai selalu tidak sesuai atau field tidak ditemukan."
+        )
+
+    def _do_fill_otp(self, otp: str) -> str:
+        """
+        Satu kali percobaan isi OTP tanpa validasi.
+        Return: nama selector/metode yang berhasil, atau '' jika gagal.
+        """
+        # 1. Coba setiap selector satu-per-satu
+        for sel in _OTP_INPUT_SELS:
+            try:
+                loc = self.page.locator(sel).first
+                if loc.is_visible(timeout=1_000):
+                    loc.click()
+                    time.sleep(0.1)
+                    loc.fill(otp)
+                    return sel
+            except Exception:
+                continue
+
+        # 2. Digit-by-digit (maxlength="1" per digit)
+        try:
+            digits = self.page.locator('input[maxlength="1"]').all()
+            if len(digits) >= len(otp):
+                for i, ch in enumerate(otp):
+                    digits[i].click()
+                    digits[i].fill(ch)
+                    time.sleep(0.08)
+                return "digit-by-digit"
+        except Exception:
+            pass
+
+        # 3. JS native setter fallback
+        filled = self.page.evaluate("""
+            (otp) => {
+                const candidates = [
+                    'input[autocomplete="one-time-code"]',
+                    'input[inputmode="numeric"]',
+                    'input[type="number"][maxlength]',
+                    'input[type="text"][maxlength]',
+                    'input[placeholder*="code" i]',
+                ];
+                for (const s of candidates) {
+                    const el = document.querySelector(s);
+                    if (el && el.offsetParent && !el.disabled && !el.readOnly) {
+                        const nv = Object.getOwnPropertyDescriptor(
+                            HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nv.call(el, otp);
+                        ['focus','input','change','blur'].forEach(
+                            e => el.dispatchEvent(new Event(e, {bubbles: true}))
+                        );
+                        return 'js:' + s;
+                    }
+                }
+                return '';
+            }
+        """, otp)
+        return filled or ""
+
+    def _validate_otp_input(self, otp: str) -> tuple:
+        """
+        Cek apakah nilai OTP benar-benar terbaca di form.
+        Return: (is_valid: bool, actual_value: str)
+        """
+        # 1. Cek single input field via selector
+        for sel in _OTP_INPUT_SELS:
+            try:
+                loc = self.page.locator(sel).first
+                if loc.is_visible(timeout=500):
+                    actual = loc.input_value()
+                    if actual == otp:
+                        return True, actual
+                    if actual:  # Ada nilai tapi beda — catat
+                        return False, actual
+            except Exception:
+                continue
+
+        # 2. Cek digit-by-digit
+        try:
+            digits = self.page.locator('input[maxlength="1"]').all()
+            if len(digits) >= len(otp):
+                combined = "".join(
+                    digits[i].input_value() or ""
+                    for i in range(len(otp))
+                )
+                if combined == otp:
+                    return True, combined
+                if combined:
+                    return False, combined
+        except Exception:
+            pass
+
+        # 3. JS read fallback
+        result = self.page.evaluate("""
+            (otp) => {
+                const sels = [
+                    'input[autocomplete="one-time-code"]',
+                    'input[inputmode="numeric"]',
+                    'input[type="number"][maxlength]',
+                    'input[type="text"][maxlength]',
+                    'input[placeholder*="code" i]',
+                ];
+                for (const s of sels) {
+                    const el = document.querySelector(s);
+                    if (el && el.offsetParent && el.value) return el.value;
+                }
+                // digit-by-digit
+                const digs = [...document.querySelectorAll('input[maxlength="1"]')];
+                if (digs.length >= otp.length) {
+                    return digs.slice(0, otp.length).map(d => d.value).join('');
+                }
+                return '';
+            }
+        """, otp)
+        actual = result or ""
+        return actual == otp, actual
+
+    # ══ OTP: CLEAR / RESEND / RESTART ════════════════════════════════
     def _clear_otp_inputs(self):
-        OTP_SELS = [
-            A1D_OTP_ID,
-            "#_r_0_-form-item",
-            'input[autocomplete="one-time-code"]',
-            'input[inputmode="numeric"]',
-            'input[type="number"][maxlength="6"]',
-            'input[type="text"][maxlength="6"]',
-            'input[placeholder*="code" i]',
-        ]
-        for sel in OTP_SELS:
+        for sel in _OTP_INPUT_SELS:
             try:
                 loc = self.page.locator(sel).first
                 if loc.is_visible(timeout=500):
@@ -588,43 +758,14 @@ class A1DProcessor(QThread):
         time.sleep(2.5)
         self._fill_email(email)
         self._click_submit()
-        self._wait_for_otp_form(timeout=30)
-        self.log("✅ Form OTP siap (setelah restart sign-in)", "SUCCESS")
 
-    def _fill_otp(self, otp: str):
-        OTP_SELS = [
-            A1D_OTP_ID,
-            "#_r_0_-form-item",
-            'input[autocomplete="one-time-code"]',
-            'input[inputmode="numeric"]',
-            'input[type="number"][maxlength="6"]',
-            'input[type="text"][maxlength="6"]',
-            'input[placeholder*="code" i]',
-        ]
-        for sel in OTP_SELS:
-            try:
-                loc = self.page.locator(sel).first
-                if loc.is_visible(timeout=1_000):
-                    loc.fill(otp)
-                    self.log(f"OTP via: {sel}", "INFO")
-                    return
-            except Exception:
-                continue
-        digits = self.page.locator('input[maxlength="1"]').all()
-        if len(digits) >= len(otp):
-            for i, ch in enumerate(otp):
-                digits[i].click()
-                digits[i].fill(ch)
-                time.sleep(0.08)
-            return
-        raise RuntimeError("❌ Input OTP tidak ditemukan")
-
+    # ══ OTP: SUBMIT + VERIFY ═══════════════════════════════════════
     def _click_otp_submit_and_verify(self, max_retries: int = 3) -> bool:
         for _ in range(max_retries):
             if self._cancelled:
                 raise InterruptedError("Dibatalkan")
             clicked = False
-            
+
             try:
                 js_selector = "body > div.bg-background.lg\\:bg-muted\\/30.animate-in.fade-in.slide-in-from-top-16.zoom-in-95.flex.h-screen.flex-col.items-center.justify-center.gap-y-10.duration-1000.lg\\:gap-y-8 > div > form > div.flex.w-full.flex-col.gap-y-2 > button.focus-visible\\:ring-ring.inline-flex.items-center.justify-center.rounded-md.text-sm.font-medium.whitespace-nowrap.transition-colors.focus-visible\\:ring-1.focus-visible\\:outline-hidden.disabled\\:pointer-events-none.disabled\\:opacity-50.bg-primary.text-primary-foreground.hover\\:bg-primary\\/90.shadow-xs.h-9.px-4.py-2"
                 btn = self.page.locator(js_selector).first
@@ -633,7 +774,7 @@ class A1DProcessor(QThread):
                     clicked = True
             except Exception:
                 pass
-            
+
             if not clicked:
                 for text in ["verify", "continue", "submit"]:
                     try:
@@ -652,6 +793,7 @@ class A1DProcessor(QThread):
                     pass
             if not clicked:
                 self.page.keyboard.press("Enter")
+
             time.sleep(2.5)
             url = self.page.url
             if "/home" in url or "dashboard" in url:
@@ -675,9 +817,9 @@ class A1DProcessor(QThread):
             time.sleep(1)
         self.log(f"⚠️ Timeout /home — {self.page.url}", "WARNING")
 
+    # ══ UPLOAD ════════════════════════════════════════════════════════════════
     def _upload_video(self):
         abs_path = os.path.abspath(self.video_path)
-        
         try:
             trigger_loc = self.page.locator("id*='trigger'").locator("..").locator('input[type="file"]')
             if trigger_loc.count() > 0:
@@ -686,7 +828,6 @@ class A1DProcessor(QThread):
                 return
         except Exception:
             pass
-
         try:
             file_input = self.page.locator('input[type="file"]').first
             file_input.set_input_files(abs_path)
@@ -705,7 +846,7 @@ class A1DProcessor(QThread):
                 continue
         raise RuntimeError("❌ Upload area tidak ditemukan")
 
-    # ══ QUALITY SELECTION ═════════════════════════════════════════
+    # ══ QUALITY ═════════════════════════════════════════════════════════════════
     def _select_quality(self, quality: str):
         q     = quality.lower().strip()
         texts = QUALITY_TEXTS.get(q, QUALITY_TEXTS["4k"])
@@ -809,7 +950,6 @@ class A1DProcessor(QThread):
                 return
         except Exception:
             pass
-
         for text in ["Generate", "Upscale", "Enhance", "Start", "Process"]:
             try:
                 btn = self.page.get_by_role("button", name=text, exact=False)
@@ -872,7 +1012,6 @@ class A1DProcessor(QThread):
                         loc = self.page.locator(f"xpath={sel}").first
                     else:
                         loc = self.page.locator(sel).first
-                        
                     if loc.is_visible(timeout=500):
                         dl_btn = loc
                         break
