@@ -1,6 +1,5 @@
 {
-  "_comment": "File ini adalah TEMPLATE. Jangan isi API key di sini. Settings asli disimpan di %APPDATA%\\A1DUpscaler\\config.json",
-  "relay_api_key": "",
+  "_comment": "Template config A1D Video Upscaler v2.7.0. Salin ke config.json atau biarkan app generate otomatis saat pertama run.",
   "output_quality": "4k",
   "output_dir": "",
   "headless": true,
@@ -10,9 +9,9 @@
   "processing_hang_timeout": 1800,
   "download_timeout": 600,
   "a1d_url": "https://a1d.ai",
-  "log_max_lines": 500,
+  "theme": "dark",
   "ffmpeg": {
-    "_comment": "Post-processing FFmpeg setelah A1D selesai upscale. Preset adobe_stock_4k_h264 memenuhi semua syarat Adobe Stock Contributor: H.264 High Profile 5.2, 3840x2160, yuv420p, CRF 18, slow, -movflags +faststart, audio di-mute (-an).",
+    "_comment": "FFmpeg post-processing setelah A1D selesai upscale. Preset adobe_stock_4k_h264 memenuhi semua syarat Adobe Stock Contributor: H.264 High 5.2, 3840x2160, yuv420p, CRF 18, slow, -movflags +faststart, audio muted.",
     "enabled": true,
     "preset_name": "adobe_stock_4k_h264",
     "mute_audio": true,
