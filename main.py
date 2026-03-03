@@ -21,67 +21,59 @@ import qtawesome as qta
 
 from App.background_process import A1DProcessor
 from App.batch_processor import BatchProcessor, MAX_PARALLEL_LIMIT, DEFAULT_WORKERS
+from App.ffmpeg_postprocessor import PRESET_LABELS, PRESET_KEYS
 
 CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
 APP_NAME    = "A1D Video Upscaler"
-APP_VER     = "2.6.2"
+APP_VER     = "2.7.0"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COLOUR SYSTEM  —  GitHub-style palette
 # ══════════════════════════════════════════════════════════════════════════════
 THEMES = {
-    # ─────────────────────────────────────────────────
-    # GitHub Dark  (github.com/settings/appearance → Dark default)
-    # ─────────────────────────────────────────────────
     "dark": {
-        "bg":         "#0d1117",   # canvas.default
-        "sidebar":    "#161b22",   # canvas.subtle
-        "surface":    "#161b22",   # canvas.subtle
-        "surface2":   "#21262d",   # canvas.inset / border.muted
-        "input":      "#0d1117",   # canvas.default
-        "border":     "#30363d",   # border.default
-        "primary":    "#1f6feb",   # accent.emphasis
-        "primary_h":  "#58a6ff",   # accent.fg
-        "accent":     "#58a6ff",   # accent.fg
-        "accent2":    "#3fb950",   # success.fg
-        "text":       "#e6edf3",   # fg.default
-        "text_dim":   "#c9d1d9",   # fg.default (slightly dimmer)
-        "text_muted": "#8b949e",   # fg.muted
-        "success":    "#3fb950",   # success.fg
-        "warning":    "#e3b341",   # attention.fg
-        "error":      "#f85149",   # danger.fg
-        "log_bg":     "#010409",   # canvas.inset
+        "bg":         "#0d1117",
+        "sidebar":    "#161b22",
+        "surface":    "#161b22",
+        "surface2":   "#21262d",
+        "input":      "#0d1117",
+        "border":     "#30363d",
+        "primary":    "#1f6feb",
+        "primary_h":  "#58a6ff",
+        "accent":     "#58a6ff",
+        "accent2":    "#3fb950",
+        "text":       "#e6edf3",
+        "text_dim":   "#c9d1d9",
+        "text_muted": "#8b949e",
+        "success":    "#3fb950",
+        "warning":    "#e3b341",
+        "error":      "#f85149",
+        "log_bg":     "#010409",
     },
-    # ─────────────────────────────────────────────────
-    # GitHub Light (github.com/settings/appearance → Light default)
-    # ─────────────────────────────────────────────────
     "light": {
-        "bg":         "#ffffff",   # canvas.default
-        "sidebar":    "#f6f8fa",   # canvas.subtle
-        "surface":    "#ffffff",   # canvas.default
-        "surface2":   "#f6f8fa",   # canvas.subtle
-        "input":      "#f6f8fa",   # canvas.subtle
-        "border":     "#d0d7de",   # border.default
-        "primary":    "#0969da",   # accent.emphasis
-        "primary_h":  "#0550ae",   # accent.emphasis (hover darker)
-        "accent":     "#0969da",   # accent.fg
-        "accent2":    "#1a7f37",   # success.fg
-        "text":       "#1f2328",   # fg.default
-        "text_dim":   "#24292f",   # fg.default
-        "text_muted": "#636c76",   # fg.muted
-        "success":    "#1a7f37",   # success.fg
-        "warning":    "#9a6700",   # attention.fg
-        "error":      "#cf222e",   # danger.fg
-        "log_bg":     "#f6f8fa",   # canvas.subtle
+        "bg":         "#ffffff",
+        "sidebar":    "#f6f8fa",
+        "surface":    "#ffffff",
+        "surface2":   "#f6f8fa",
+        "input":      "#f6f8fa",
+        "border":     "#d0d7de",
+        "primary":    "#0969da",
+        "primary_h":  "#0550ae",
+        "accent":     "#0969da",
+        "accent2":    "#1a7f37",
+        "text":       "#1f2328",
+        "text_dim":   "#24292f",
+        "text_muted": "#636c76",
+        "success":    "#1a7f37",
+        "warning":    "#9a6700",
+        "error":      "#cf222e",
+        "log_bg":     "#f6f8fa",
     },
 }
 
 C = dict(THEMES["dark"])
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STYLESHEET  —  ALL sizes in pt (never px) so QFont::pointSize() is always valid
-#  font-weight capped at 900 (Qt CSS maximum)
-# ══════════════════════════════════════════════════════════════════════════════
+
 def build_stylesheet(c: dict) -> str:
     return f"""
 * {{ font-family: 'Inter', 'Segoe UI', sans-serif; outline: none; }}
@@ -94,7 +86,6 @@ QWidget#Sidebar {{
     border-right: 1px solid {c['border']};
 }}
 
-/* ─ Typography ───────────────────────────────────── */
 QLabel {{ color: {c['text_dim']}; font-size: 10pt; font-weight: 600; }}
 QLabel#PageTitle {{
     color: {c['text']}; font-size: 21pt; font-weight: 900; letter-spacing: -0.5px;
@@ -116,7 +107,6 @@ QLabel#BadgeLabel {{
     border: 1px solid {c['primary']}50;
 }}
 
-/* ─ Cards ────────────────────────────────────────── */
 QFrame#Card {{
     background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 6px;
 }}
@@ -133,7 +123,6 @@ QFrame#WarnCard {{
     border-left: 4px solid {c['warning']}; border-radius: 6px;
 }}
 
-/* ─ Buttons ──────────────────────────────────────── */
 QPushButton {{
     background: {c['surface2']}; border: 1px solid {c['border']};
     border-radius: 6px; padding: 8px 18px;
@@ -167,7 +156,6 @@ QPushButton#GhostBtn {{
 }}
 QPushButton#GhostBtn:hover {{ border-color: {c['primary']}; color: {c['primary_h']}; background: {c['primary']}10; }}
 
-/* ─ Sidebar Nav ──────────────────────────────────── */
 QToolButton#NavBtn {{
     background: transparent; border: none; border-radius: 6px;
     padding: 12px 16px; font-size: 10pt; font-weight: 600;
@@ -180,7 +168,6 @@ QToolButton#NavBtn:checked {{
     border-left: 3px solid {c['primary']};
 }}
 
-/* ─ Inputs ───────────────────────────────────────── */
 QLineEdit, QComboBox, QSpinBox {{
     background: {c['input']}; border: 1px solid {c['border']};
     border-radius: 6px; padding: 9px 14px; min-height: 22px;
@@ -196,7 +183,6 @@ QComboBox QAbstractItemView {{
     color: {c['text']}; selection-background-color: {c['primary']}40;
 }}
 
-/* ─ Checkbox ───────────────────────────────────── */
 QCheckBox {{ color: {c['text_dim']}; spacing: 10px; font-weight: 600; font-size: 10pt; }}
 QCheckBox::indicator {{
     width: 18px; height: 18px; border: 1px solid {c['border']};
@@ -208,7 +194,6 @@ QCheckBox::indicator:checked {{
     border-color: {c['primary']};
 }}
 
-/* ─ List ───────────────────────────────────────────── */
 QListWidget {{
     background: {c['input']}; border: 1px solid {c['border']};
     border-radius: 6px; outline: none; color: {c['text_dim']}; font-weight: 600;
@@ -222,7 +207,6 @@ QListWidget::item:selected {{
     border-left: 3px solid {c['primary']};
 }}
 
-/* ─ Progress Bar ─────────────────────────────────── */
 QProgressBar {{
     background: {c['surface2']}; border: 1px solid {c['border']};
     border-radius: 6px; min-height: 10px; color: transparent;
@@ -232,7 +216,6 @@ QProgressBar::chunk {{
     border-radius: 5px;
 }}
 
-/* ─ Scrollbar ─────────────────────────────────────── */
 QScrollBar:vertical {{ background: transparent; width: 8px; }}
 QScrollBar::handle:vertical {{
     background: {c['border']}; border-radius: 4px; min-height: 40px;
@@ -372,17 +355,47 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._load_settings_to_ui()
 
-    # ── Config ──────────────────────────────────────────────────────────────────
+    # ── Config ───────────────────────────────────────────────────────────────────────
     def _load_config(self):
-        d = {"relay_api_key":"","output_quality":"4k","output_dir":"",
-             "headless":True,"max_workers":DEFAULT_WORKERS,
-             "batch_stagger_delay":15,"initial_download_wait":120,
-             "processing_hang_timeout":1800,"download_timeout":600,
-             "a1d_url":"https://a1d.ai","theme":"dark"}
+        # ─ Defaults ────────────────────────────────────────────────────────────
+        d = {
+            "output_quality":          "4k",
+            "output_dir":              "",
+            "headless":                True,
+            "max_workers":             DEFAULT_WORKERS,
+            "batch_stagger_delay":     15,
+            "initial_download_wait":   120,
+            "processing_hang_timeout": 1800,
+            "download_timeout":        600,
+            "a1d_url":                 "https://a1d.ai",
+            "theme":                   "dark",
+            "ffmpeg": {
+                "enabled":          True,
+                "preset_name":      "adobe_stock_4k_h264",
+                "mute_audio":       True,
+                "replace_original": True,
+                "crf":              18,
+                "encode_preset":    "slow",
+                "timeout":          7200,
+                "video_codec":      "libx264",
+                "pix_fmt":          "yuv420p",
+                "scale":            "3840:2160",
+                "audio_codec":      "aac",
+                "audio_rate":       "48000",
+                "audio_bitrate":    "320k",
+                "extra_args":       "-movflags +faststart",
+            },
+        }
         if os.path.exists(CONFIG_PATH):
             try:
-                with open(CONFIG_PATH) as f: d.update(json.load(f))
-            except: pass
+                with open(CONFIG_PATH, encoding="utf-8") as f:
+                    loaded = json.load(f)
+                # Merge ffmpeg sub-dict agar tidak tertimpa seluruhnya
+                if "ffmpeg" in loaded:
+                    d["ffmpeg"].update(loaded.pop("ffmpeg"))
+                d.update(loaded)
+            except Exception:
+                pass
         return d
 
     def _apply_theme(self, name):
@@ -390,7 +403,7 @@ class MainWindow(QMainWindow):
         C.update(THEMES.get(name, THEMES["dark"]))
         self._theme = name; self.config["theme"] = name
 
-    # ── UI Scaffold ──────────────────────────────────────────────────────────────
+    # ── UI Scaffold ───────────────────────────────────────────────────────────────────
     def _setup_ui(self):
         root = QWidget(); self.setCentralWidget(root)
         hl = QHBoxLayout(root); hl.setContentsMargins(0,0,0,0); hl.setSpacing(0)
@@ -403,7 +416,7 @@ class MainWindow(QMainWindow):
         self.nav_queue.setChecked(True)
         self._refresh_all()
 
-    # ── Sidebar ─────────────────────────────────────────────────────────────
+    # ── Sidebar ──────────────────────────────────────────────────────────────────
     def _build_sidebar(self):
         sb = QWidget(); sb.setObjectName("Sidebar"); sb.setFixedWidth(260)
         ly = QVBoxLayout(sb); ly.setContentsMargins(16, 32, 16, 24); ly.setSpacing(4)
@@ -446,7 +459,7 @@ class MainWindow(QMainWindow):
         b.clicked.connect(self._refresh_nav_icons)
         return b
 
-    # ── Dashboard ────────────────────────────────────────────────────────────
+    # ── Dashboard ────────────────────────────────────────────────────────────────
     def _build_dashboard(self):
         page = QWidget(); ly = QVBoxLayout(page)
         ly.setContentsMargins(40, 40, 40, 40); ly.setSpacing(20)
@@ -501,7 +514,7 @@ class MainWindow(QMainWindow):
         ly.addWidget(self.prog_card)
         return page
 
-    # ── Settings ───────────────────────────────────────────────────────────
+    # ── Settings ───────────────────────────────────────────────────────────────────
     def _build_settings(self):
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
         content = QWidget(); ly = QVBoxLayout(content)
@@ -532,24 +545,20 @@ class MainWindow(QMainWindow):
                 h = QLabel(hint); h.setObjectName("HintLabel"); ly2.addWidget(h)
             return w
 
-        # Auth
-        g1, f1 = section("Authentication & API", "fa5s.key")
-        self.i_api = QLineEdit(); self.i_api.setEchoMode(QLineEdit.Password)
-        self.i_api.setPlaceholderText("Paste your Firefox Relay API key here")
+        # ─────────────────────────────────────────────────────────────────────
+        # 1. A1D Service
+        # ─────────────────────────────────────────────────────────────────────
+        g1, f1 = section("A1D Service", "fa5s.cog")
         self.i_url = QLineEdit(); self.i_url.setPlaceholderText("https://a1d.ai")
-        self.btn_show = QPushButton(); self.btn_show.setObjectName("GhostBtn")
-        self.btn_show.setIcon(qta.icon("fa5s.eye", color=C['text_muted']))
-        self.btn_show.setFixedSize(40, 40); self.btn_show.setCheckable(True)
-        self.btn_show.toggled.connect(lambda on: (
-            self.i_api.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password),
-            self.btn_show.setIcon(qta.icon("fa5s.eye-slash" if on else "fa5s.eye", color=C['accent']))
-        ))
-        key_row = QHBoxLayout(); key_row.addWidget(self.i_api); key_row.addWidget(self.btn_show)
-        f1.addRow(row_label("Firefox Relay Key", "Required for temporary email masking"), key_row)
-        f1.addRow(row_label("Service URL", "Override if A1D changes their domain"), self.i_url)
+        mail_note = QLabel("✉️  Temporary email otomatis via Mailticking — tidak perlu API key.")
+        mail_note.setObjectName("HintLabel")
+        f1.addRow(row_label("Service URL", "Override jika A1D ganti domain"), self.i_url)
+        f1.addRow("", mail_note)
         ly.addWidget(g1)
 
-        # Output
+        # ─────────────────────────────────────────────────────────────────────
+        # 2. Output & Quality
+        # ─────────────────────────────────────────────────────────────────────
         g2, f2 = section("Output & Quality", "fa5s.film", "SuccessCard")
         self.c_qual = QComboBox(); self.c_qual.addItems(["4k", "2k", "1080p"]); self.c_qual.setMinimumHeight(40)
         self.i_out = QLineEdit(); self.i_out.setPlaceholderText("Leave empty to save next to source file")
@@ -559,11 +568,13 @@ class MainWindow(QMainWindow):
         out_row = QHBoxLayout(); out_row.addWidget(self.i_out); out_row.addWidget(b_brw)
         self.s_wait = QSpinBox(); self.s_wait.setRange(0, 600); self.s_wait.setSuffix(" sec"); self.s_wait.setMinimumHeight(40)
         f2.addRow(row_label("Target Resolution", "Upscale target: 4K / 2K / 1080p"), self.c_qual)
-        f2.addRow(row_label("Output Directory",  "Where to save finished videos"), out_row)
-        f2.addRow(row_label("Initial Render Wait","Wait before checking download button"), self.s_wait)
+        f2.addRow(row_label("Output Directory",  "Folder penyimpanan video hasil"), out_row)
+        f2.addRow(row_label("Initial Render Wait","Tunggu sebelum cek tombol Download"), self.s_wait)
         ly.addWidget(g2)
 
-        # Performance
+        # ─────────────────────────────────────────────────────────────────────
+        # 3. Performance & Reliability
+        # ─────────────────────────────────────────────────────────────────────
         g3, f3 = section("Performance & Reliability", "fa5s.microchip", "WarnCard")
         self.s_work    = QSpinBox(); self.s_work.setRange(1, MAX_PARALLEL_LIMIT); self.s_work.setMinimumHeight(40)
         self.s_stagger = QSpinBox(); self.s_stagger.setRange(0, 120); self.s_stagger.setSuffix(" sec"); self.s_stagger.setMinimumHeight(40)
@@ -575,24 +586,72 @@ class MainWindow(QMainWindow):
         self.btn_rst.setIcon(qta.icon("fa5s.sync-alt", color=C['warning'])); self.btn_rst.setMinimumHeight(44)
         self.btn_rst.clicked.connect(self._force_reset)
         f3.addRow(row_label("Max Parallel Workers",  f"Max: {MAX_PARALLEL_LIMIT} simultaneous"), self.s_work)
-        f3.addRow(row_label("Stagger Delay",         "Seconds between launching each worker"), self.s_stagger)
-        f3.addRow(row_label("Download Timeout",      "Max wait for download to start"), self.s_dl_to)
-        f3.addRow(row_label("Process Hang Timeout",  "Kill worker if total time exceeds this"), self.s_hang)
+        f3.addRow(row_label("Stagger Delay",         "Detik jeda antar worker start"), self.s_stagger)
+        f3.addRow(row_label("Download Timeout",      "Max tunggu download mulai"), self.s_dl_to)
+        f3.addRow(row_label("Process Hang Timeout",  "Kill worker jika total waktu melebihi ini"), self.s_hang)
         f3.addRow("", self.chk_h); f3.addRow("", self.btn_rst)
         ly.addWidget(g3)
 
+        # ─────────────────────────────────────────────────────────────────────
+        # 4. FFmpeg Post-Processing  (Adobe Stock 4K Microstock)
+        # ─────────────────────────────────────────────────────────────────────
+        g4, f4 = section("FFmpeg Post-Processing", "fa5s.photo-video", "SuccessCard")
+
+        self.chk_ff_en = QCheckBox(
+            "🎬 Aktifkan FFmpeg setelah A1D selesai upscale"
+        )
+
+        self.c_ff_preset = QComboBox(); self.c_ff_preset.setMinimumHeight(40)
+        for key in PRESET_KEYS:
+            self.c_ff_preset.addItem(PRESET_LABELS[key], userData=key)
+
+        self.chk_ff_mute = QCheckBox(
+            "🔇 Mute Audio (-an)  — wajib untuk stock video Adobe tanpa musik"
+        )
+        self.chk_ff_replace = QCheckBox(
+            "♻️ Replace Original  — ganti file A1D dengan hasil FFmpeg (hemat storage)"
+        )
+
+        self.s_ff_crf = QSpinBox()
+        self.s_ff_crf.setRange(0, 51)
+        self.s_ff_crf.setToolTip("0 = lossless, 18 = sangat bagus, 28 = medium")
+        self.s_ff_crf.setMinimumHeight(40)
+
+        self.c_ff_speed = QComboBox(); self.c_ff_speed.setMinimumHeight(40)
+        self.c_ff_speed.addItems([
+            "ultrafast", "superfast", "veryfast", "faster",
+            "fast", "medium", "slow", "slower", "veryslow",
+        ])
+
+        ff_note = QLabel(
+            "📌 Preset adobe_stock_4k_h264: H.264 High 5.2 │ 3840×2160 │ "
+            "yuv420p │ CRF 18 │ slow │ -movflags +faststart"
+        )
+        ff_note.setObjectName("HintLabel")
+        ff_note.setWordWrap(True)
+
+        f4.addRow("",                                                          self.chk_ff_en)
+        f4.addRow(row_label("Preset",       "Resolusi & codec output"),        self.c_ff_preset)
+        f4.addRow("",                                                          self.chk_ff_mute)
+        f4.addRow("",                                                          self.chk_ff_replace)
+        f4.addRow(row_label("CRF",          "0=lossless  18=sangat bagus"),    self.s_ff_crf)
+        f4.addRow(row_label("Encode Speed", "slow=kualitas terbaik"),          self.c_ff_speed)
+        f4.addRow("",                                                          ff_note)
+        ly.addWidget(g4)
+
+        # ─ Save button ─────────────────────────────────────────────────────────────
         btn_sv = QPushButton("  SAVE ALL SETTINGS"); btn_sv.setObjectName("PrimaryBtn")
         btn_sv.setIcon(qta.icon("fa5s.save", color="#FFF")); btn_sv.setMinimumHeight(52)
         btn_sv.clicked.connect(self._save_config); ly.addWidget(btn_sv)
         ly.addStretch()
         scroll.setWidget(content); return scroll
 
-    # ── Logs ──────────────────────────────────────────────────────────────────
+    # ── Logs ─────────────────────────────────────────────────────────────────────────
     def _build_logs(self):
         page = QWidget(); ly = QVBoxLayout(page)
         ly.setContentsMargins(40, 40, 40, 40); ly.setSpacing(20)
 
-        self.log_viewer = LogViewer()  # create first
+        self.log_viewer = LogViewer()
 
         hdr = QHBoxLayout()
         t   = QLabel("System Logs"); t.setObjectName("PageTitle")
@@ -615,7 +674,7 @@ class MainWindow(QMainWindow):
         ly.addWidget(self.log_viewer)
         return page
 
-    # ── Theme ─────────────────────────────────────────────────────────────────
+    # ── Theme ────────────────────────────────────────────────────────────────────────
     def _toggle_theme(self):
         new = "light" if self._theme == "dark" else "dark"
         self._apply_theme(new)
@@ -644,47 +703,77 @@ class MainWindow(QMainWindow):
                           (self.nav_logs,"fa5s.terminal")]:
             btn.setIcon(qta.icon(icon, color=C['primary_h'] if btn.isChecked() else C['text_muted']))
 
-    # ── Business Logic ──────────────────────────────────────────────────────────
+    # ── Business Logic ────────────────────────────────────────────────────────────
     def _load_settings_to_ui(self):
-        c = self.config
-        self.i_api.setText(c.get("relay_api_key",""))
-        self.i_url.setText(c.get("a1d_url","https://a1d.ai"))
-        self.c_qual.setCurrentText(c.get("output_quality","4k"))
-        self.i_out.setText(c.get("output_dir",""))
-        self.s_work.setValue(c.get("max_workers", DEFAULT_WORKERS))
-        self.s_stagger.setValue(c.get("batch_stagger_delay", 15))
+        c  = self.config
+        ff = c.get("ffmpeg", {})
+
+        # A1D Service
+        self.i_url.setText(c.get("a1d_url", "https://a1d.ai"))
+
+        # Output & Quality
+        self.c_qual.setCurrentText(c.get("output_quality", "4k"))
+        self.i_out.setText(c.get("output_dir", ""))
         self.s_wait.setValue(c.get("initial_download_wait", 120))
-        self.s_dl_to.setValue(c.get("download_timeout", 600))
+
+        # Performance
+        self.s_work.setValue(c.get("max_workers",             DEFAULT_WORKERS))
+        self.s_stagger.setValue(c.get("batch_stagger_delay",  15))
+        self.s_dl_to.setValue(c.get("download_timeout",       600))
         self.s_hang.setValue(c.get("processing_hang_timeout", 1800))
         self.chk_h.setChecked(c.get("headless", True))
 
+        # FFmpeg
+        self.chk_ff_en.setChecked(ff.get("enabled",          True))
+        preset_key = ff.get("preset_name", "adobe_stock_4k_h264")
+        idx = self.c_ff_preset.findData(preset_key)
+        if idx >= 0: self.c_ff_preset.setCurrentIndex(idx)
+        self.chk_ff_mute.setChecked(ff.get("mute_audio",       True))
+        self.chk_ff_replace.setChecked(ff.get("replace_original", True))
+        self.s_ff_crf.setValue(ff.get("crf",                   18))
+        sp_idx = self.c_ff_speed.findText(ff.get("encode_preset", "slow"))
+        if sp_idx >= 0: self.c_ff_speed.setCurrentIndex(sp_idx)
+
     def _save_config(self, silent=False):
+        ff = dict(self.config.get("ffmpeg", {}))
+        ff.update({
+            "enabled":          self.chk_ff_en.isChecked(),
+            "preset_name":      self.c_ff_preset.currentData(),
+            "mute_audio":       self.chk_ff_mute.isChecked(),
+            "replace_original": self.chk_ff_replace.isChecked(),
+            "crf":              self.s_ff_crf.value(),
+            "encode_preset":    self.c_ff_speed.currentText(),
+        })
         self.config.update({
-            "relay_api_key":          self.i_api.text().strip(),
-            "a1d_url":                self.i_url.text().strip(),
-            "output_quality":         self.c_qual.currentText(),
-            "output_dir":             self.i_out.text().strip(),
-            "max_workers":            self.s_work.value(),
-            "batch_stagger_delay":    self.s_stagger.value(),
-            "initial_download_wait":  self.s_wait.value(),
-            "download_timeout":       self.s_dl_to.value(),
-            "processing_hang_timeout":self.s_hang.value(),
-            "headless":               self.chk_h.isChecked(),
-            "theme":                  self._theme,
+            "a1d_url":                 self.i_url.text().strip() or "https://a1d.ai",
+            "output_quality":          self.c_qual.currentText(),
+            "output_dir":              self.i_out.text().strip(),
+            "initial_download_wait":   self.s_wait.value(),
+            "max_workers":             self.s_work.value(),
+            "batch_stagger_delay":     self.s_stagger.value(),
+            "download_timeout":        self.s_dl_to.value(),
+            "processing_hang_timeout": self.s_hang.value(),
+            "headless":                self.chk_h.isChecked(),
+            "theme":                   self._theme,
+            "ffmpeg":                  ff,
         })
         try:
-            with open(CONFIG_PATH,"w",encoding="utf-8") as f: json.dump(self.config,f,indent=2)
-            if not silent: self._log("All settings saved to config.json","SUCCESS")
-        except Exception as e: self._log(f"Cannot save config: {e}","ERROR")
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+            if not silent: self._log("All settings saved to config.json", "SUCCESS")
+        except Exception as e:
+            self._log(f"Cannot save config: {e}", "ERROR")
 
     def _force_reset(self):
-        if QMessageBox.question(self,"Force Reset","Stop all workers and clear temp folder?",
-                                QMessageBox.Yes|QMessageBox.No) != QMessageBox.Yes: return
+        if QMessageBox.question(self, "Force Reset",
+                                "Stop all workers and clear temp folder?",
+                                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
         self._cancel()
-        for folder in ["temp","debug"]:
+        for folder in ["temp", "debug"]:
             p = os.path.join(_PROJECT_ROOT, folder)
             if os.path.exists(p): shutil.rmtree(p, ignore_errors=True)
-        self._log("Force reset complete — workers terminated, temp & debug folders cleared.","WARNING")
+        self._log("Force reset complete — workers terminated, temp & debug cleared.", "WARNING")
 
     def _export_logs(self):
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -694,9 +783,11 @@ class MainWindow(QMainWindow):
             "Text (*.txt)")
         if path:
             try:
-                with open(path,"w",encoding="utf-8") as f: f.write(self.log_viewer.toPlainText())
-                self._log(f"Logs exported → {path}","SUCCESS")
-            except Exception as e: self._log(f"Export failed: {e}","ERROR")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self.log_viewer.toPlainText())
+                self._log(f"Logs exported → {path}", "SUCCESS")
+            except Exception as e:
+                self._log(f"Export failed: {e}", "ERROR")
 
     def _log(self, m, l="INFO"):
         if hasattr(self, "log_viewer"): self.log_viewer.append_log(m, l)
@@ -706,12 +797,12 @@ class MainWindow(QMainWindow):
         else: self._add_files(ps)
 
     def _browse_files(self):
-        fs, _ = QFileDialog.getOpenFileNames(self,"Select Videos","",
+        fs, _ = QFileDialog.getOpenFileNames(self, "Select Videos", "",
                 "Videos (*.mp4 *.mkv *.mov *.avi *.webm *.flv)")
         self._add_files(fs)
 
     def _browse_output(self):
-        d = QFileDialog.getExistingDirectory(self,"Output Folder")
+        d = QFileDialog.getExistingDirectory(self, "Output Folder")
         if d: self.i_out.setText(d)
 
     def _add_files(self, ps):
@@ -739,15 +830,28 @@ class MainWindow(QMainWindow):
 
     def _start(self):
         if not self._paths:
-            return self._log("Queue is empty. Please add video files.","WARNING")
-        if not self.i_api.text().strip():
-            self._log("Firefox Relay API Key is required. Go to Settings.","ERROR")
-            return self.nav_settings.click()
-        self._save_config(silent=True); self._set_running(True); cfg = dict(self.config)
+            return self._log("Queue is empty. Please add video files.", "WARNING")
+        self._save_config(silent=True)
+        self._set_running(True)
+        cfg = dict(self.config)
         self._log("-" * 52)
-        self._log(f"BATCH ENGINE STARTING  —  {len(self._paths)} file(s)  |  {cfg['output_quality'].upper()} mode","SUCCESS")
-        self._log(f"Workers: {cfg['max_workers']}  |  Stagger: {cfg['batch_stagger_delay']}s  |  Headless: {cfg['headless']}")
-        self._log(f"Initial wait: {cfg['initial_download_wait']}s  |  Hang timeout: {cfg['processing_hang_timeout']}s")
+        self._log(
+            f"BATCH ENGINE STARTING  —  {len(self._paths)} file(s)  |  "
+            f"{cfg['output_quality'].upper()} mode  |  "
+            f"FFmpeg: {'ON' if cfg.get('ffmpeg', {}).get('enabled', True) else 'OFF'}",
+            "SUCCESS",
+        )
+        self._log(
+            f"Workers: {cfg['max_workers']}  |  Stagger: {cfg['batch_stagger_delay']}s  "
+            f"|  Headless: {cfg['headless']}"
+        )
+        ff = cfg.get("ffmpeg", {})
+        self._log(
+            f"FFmpeg preset: {ff.get('preset_name','adobe_stock_4k_h264')}  "
+            f"|  CRF: {ff.get('crf', 18)}  "
+            f"|  Audio: {'MUTED' if ff.get('mute_audio', True) else 'KEEP'}  "
+            f"|  Replace: {ff.get('replace_original', True)}"
+        )
         self._log("-" * 52)
         if len(self._paths) == 1:
             self.processor = A1DProcessor(_PROJECT_ROOT, self._paths[0], cfg)
@@ -780,7 +884,7 @@ class MainWindow(QMainWindow):
 
     def _cancel(self):
         if self.processor: self.processor.cancel()
-        self._log("Force stop requested — terminating all workers.","ERROR")
+        self._log("Force stop requested — terminating all workers.", "ERROR")
 
 
 if __name__ == "__main__":
