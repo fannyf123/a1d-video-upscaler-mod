@@ -49,57 +49,64 @@ echo         OK  -  Python 3.12 berhasil diinstall.
 :: Patch ._pth + Install pip
 :: ===========================================================
 :pip_setup
-
-:: Patch semua python3*._pth (wildcard agar jalan di versi manapun)
-:: WAJIB dilakukan SEBELUM pip diinstall agar site-packages aktif
 echo         Patch ._pth untuk aktifkan site-packages...
-for %%f in ("%PY_DIR%\python3*._pth") do (
-    findstr /C:"import site" "%%f" >nul 2>&1
+
+:: FIX 1: Direct patch untuk Python 3.12 (hardcoded, paling reliable)
+if exist "%PY_DIR%\python312._pth" (
+    findstr /C:"import site" "%PY_DIR%\python312._pth" >nul 2>&1
     if errorlevel 1 (
-        echo import site>>"%%f"
-        echo         Patched: %%~nxf
+        echo import site>>"%PY_DIR%\python312._pth"
+        echo         Patched  -  python312._pth
+    ) else (
+        echo         OK  -  python312._pth sudah ter-patch.
     )
 )
 
-:: Cek apakah pip sudah tersedia
-"%PY_EXE%" -m pip --version >nul 2>&1
-if not errorlevel 1 (
-    echo         OK  -  pip sudah tersedia.
-    goto :install_deps
+:: FIX 2: Wildcard via pushd (wildcard TIDAK bisa expand dalam quoted path)
+:: pushd dulu ke folder python agar glob berjalan tanpa masalah spasi
+pushd "%PY_DIR%"
+for %%f in (python3*._pth) do (
+    findstr /C:"import site" "%%f" >nul 2>&1
+    if errorlevel 1 (
+        echo import site>>"%%f"
+        echo         Patched  -  %%f
+    )
 )
+popd
 
-:: Coba ensurepip dulu (bundled dalam Python, tidak perlu download)
-echo         Setup pip via ensurepip ^(bundled^)...
-"%PY_EXE%" -m ensurepip --upgrade
-
-:: Verifikasi setelah ensurepip
+:: Cek apakah pip sudah tersedia (skip install jika sudah ada)
 "%PY_EXE%" -m pip --version >nul 2>&1
 if not errorlevel 1 (
-    echo         OK  -  pip berhasil diinstall via ensurepip.
+    echo         OK  -  pip sudah tersedia, skip install.
     goto :upgrade_pip
 )
 
-:: Fallback: download get-pip.py jika ensurepip gagal
-echo         ensurepip gagal  -  fallback ke get-pip.py...
+:: Install pip via get-pip.py
+:: CATATAN: ensurepip TIDAK tersedia di Python embed (sengaja di-strip)
+:: get-pip.py adalah satu-satunya cara install pip di embedded Python
+echo         Download get-pip.py...
 powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', '%ROOT%get-pip.py')"
 if errorlevel 1 (
-    echo  [ERROR] Gagal download get-pip.py. Periksa koneksi.
+    echo  [ERROR] Gagal download get-pip.py. Periksa koneksi internet.
     pause & exit /b 1
 )
-"%PY_EXE%" "%ROOT%get-pip.py"
+
+echo         Menginstall pip...
+"%PY_EXE%" "%ROOT%get-pip.py" --no-warn-script-location
 del "%ROOT%get-pip.py" 2>nul
 
-:: Verifikasi akhir
+:: Verifikasi pip berhasil
 "%PY_EXE%" -m pip --version >nul 2>&1
 if errorlevel 1 (
-    echo  [ERROR] pip tidak bisa diinstall setelah dua percobaan.
-    echo         Coba hapus folder 'python\' lalu jalankan ulang Launcher.bat
+    echo  [ERROR] pip tidak bisa dijalankan setelah install.
+    echo         Kemungkinan import site belum aktif di ._pth
+    echo         Solusi: hapus folder 'python\' lalu jalankan ulang Launcher.bat
     pause & exit /b 1
 )
-echo         OK  -  pip berhasil diinstall via get-pip.py.
+echo         OK  -  pip berhasil diinstall.
 
 :upgrade_pip
-echo         Upgrade pip ke versi terbaru...
+echo         Upgrade pip...
 "%PY_EXE%" -m pip install --upgrade pip --quiet --disable-pip-version-check
 
 :: ===========================================================
@@ -148,32 +155,26 @@ echo.
 echo  [4/4] FFmpeg Post-Processing Engine
 echo  -----------------------------------------------------------
 
-:: Prioritas 1: portable lokal di folder ffmpeg/
 if exist "%FF_EXE%" (
     echo         OK  -  FFmpeg portable ditemukan.
     set "PATH=%FF_DIR%\bin;%PATH%"
     goto :launch
 )
 
-:: Prioritas 2: FFmpeg sudah di system PATH
 where ffmpeg >nul 2>&1
 if not errorlevel 1 (
     echo         OK  -  FFmpeg ditemukan di system PATH.
     goto :launch
 )
 
-:: FFmpeg tidak ada  →  Download otomatis
 echo         DOWNLOAD  -  FFmpeg belum ada, mendownload...
 echo         Sumber 1: gyan.dev ^(ffmpeg-release-essentials ~75 MB^)
 
-:: Bersihkan sisa gagal sebelumnya
 if exist "%FF_TMP%" rd /s /q "%FF_TMP%" 2>nul
 if exist "%FF_ZIP%"  del "%FF_ZIP%"  2>nul
 
-:: --- Download: gyan.dev (primary) ----------------------------------
 powershell -NoProfile -Command "& { try { $wc = New-Object Net.WebClient; $wc.DownloadFile('https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip', $env:FF_ZIP); Write-Host '         Download selesai.' } catch { Write-Host ('         [WARN] gyan.dev gagal: ' + $_.Exception.Message) } }"
 
-:: Jika gagal, coba BtbN GitHub Releases (fallback)
 if not exist "%FF_ZIP%" (
     echo         Sumber 2: github.com/BtbN/FFmpeg-Builds ^(win64-gpl ~80 MB^)
     powershell -NoProfile -Command "& { try { $wc = New-Object Net.WebClient; $wc.DownloadFile('https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', $env:FF_ZIP); Write-Host '         Download selesai.' } catch { Write-Host ('         [WARN] BtbN gagal: ' + $_.Exception.Message) } }"
@@ -181,25 +182,20 @@ if not exist "%FF_ZIP%" (
 
 if not exist "%FF_ZIP%" (
     echo  [WARN] Kedua sumber download gagal.
-    echo         FFmpeg tidak terinstall  -  fitur post-processing dinonaktifkan.
-    echo         Pasang FFmpeg manual ^(https://ffmpeg.org/download.html^) lalu jalankan ulang.
+    echo         FFmpeg tidak terinstall  -  post-processing dinonaktifkan.
     goto :launch
 )
 
-:: --- Ekstrak zip ke folder sementara --------------------------------
 echo         Mengekstrak arsip...
 powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:FF_ZIP, $env:FF_TMP)"
 
-:: --- Salin bin\ ke ffmpeg\bin\ ----------------------------------------
 powershell -NoProfile -Command "$sub = Get-ChildItem $env:FF_TMP -Directory | Select-Object -First 1; if (-not $sub) { Write-Host '[ERROR] Struktur zip tidak dikenali'; exit 1 }; $src = Join-Path $sub.FullName 'bin'; $dst = Join-Path $env:FF_DIR 'bin'; if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Force -Path $dst | Out-Null }; Copy-Item (Join-Path $src '*') -Destination $dst -Recurse -Force; Write-Host '         Salin selesai.'"
 
-:: --- Bersihkan temp ------------------------------------------------
 if exist "%FF_TMP%" rd /s /q "%FF_TMP%" 2>nul
 if exist "%FF_ZIP%" del "%FF_ZIP%" 2>nul
 
 if exist "%FF_EXE%" (
     echo         OK  -  FFmpeg portable berhasil diinstall.
-    echo         Path aktif: %FF_DIR%\bin
     set "PATH=%FF_DIR%\bin;%PATH%"
 ) else (
     echo  [WARN] FFmpeg gagal diinstall  -  post-processing dinonaktifkan.
