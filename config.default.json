@@ -10,5 +10,22 @@
   "processing_hang_timeout": 1800,
   "download_timeout": 600,
   "a1d_url": "https://a1d.ai",
-  "log_max_lines": 500
+  "log_max_lines": 500,
+  "ffmpeg": {
+    "_comment": "Post-processing FFmpeg setelah A1D selesai upscale",
+    "enabled": false,
+    "preset_name": "adobe_stock_4k_h264",
+    "mute_audio": false,
+    "replace_original": false,
+    "timeout": 7200,
+    "video_codec": "libx264",
+    "crf": 18,
+    "encode_preset": "slow",
+    "pix_fmt": "yuv420p",
+    "scale": "3840:2160",
+    "audio_codec": "aac",
+    "audio_rate": "48000",
+    "audio_bitrate": "320k",
+    "extra_args": "-movflags +faststart"
+  }
 }
