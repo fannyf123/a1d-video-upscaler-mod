@@ -1,80 +1,81 @@
 <div align="center">
 
-# 🎬 A1D Video Upscaler Batch
+# 🎬 A1D Video Upscaler Mod
 
-**Otomasi upscale video via [a1d.ai](https://a1d.ai) dengan antarmuka GUI modern**
+**Otomasi batch upscale video via [a1d.ai](https://a1d.ai) — GUI modern, FFmpeg post-processing, zero API key**
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Version](https://img.shields.io/badge/Version-2.7.0-blue?style=for-the-badge)](https://github.com/fannyf123/a1d-video-upscaler-mod/releases)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![PySide6](https://img.shields.io/badge/PySide6-6.0%2B-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://doc.qt.io/qtforpython)
 [![Playwright](https://img.shields.io/badge/Playwright-1.42%2B-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)](https://playwright.dev)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-Auto_Install-orange?style=for-the-badge&logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+
+*Fork dari [SotongHD](https://github.com/SotongHD) — dimodifikasi untuk batch processing, Mailticking, dan FFmpeg post-processing*
 
 </div>
 
 ---
 
-## ✨ Fitur
+## ✨ Fitur Utama
 
 | Fitur | Keterangan |
 |---|---|
-| 🤖 **Full Otomasi** | Login, upload, pilih kualitas, download — semua otomatis |
-| 🚀 **Batch Mode** | Proses hingga **5 video paralel** sekaligus |
-| 🎨 **Dark / Light GUI** | Antarmuka modern dark-theme & light-theme, drag & drop support |
-| 🦁 **Playwright** | Tidak perlu install Chrome — Playwright bundled Chromium |
-| 📧 **Email Mask** | Firefox Relay untuk akun temporary sekali pakai |
-| 🔄 **OTP Auto-Retry** | OTP gagal? Otomatis klik Resend atau restart sign-in (max 3x) |
-| 📊 **Real-time Log** | Log berwarna dengan timestamp per worker |
-| ⚙️ **Configurable** | Kualitas output, jumlah worker, stagger delay, timeout |
+| 🤖 **Full Otomasi** | Login, upload, pilih kualitas, download — semua otomatis via Playwright |
+| 🚀 **Batch Paralel** | Proses hingga **5 video sekaligus** dengan antrian cerdas |
+| 📧 **Mailticking** | Email temporary otomatis — **tanpa API key, tanpa setup** |
+| 🎥 **FFmpeg Post-Processing** | Encode ulang hasil A1D: H.264/H.265, CRF, preset Adobe Stock 4K |
+| 🔇 **Adobe Stock Ready** | Preset mute audio + faststart — siap upload ke Adobe Stock langsung |
+| 🎨 **Dark / Light Theme** | GUI GitHub-style, drag & drop, real-time log berwarna |
+| ⚙️ **Settings Lengkap** | Worker, timeout, FFmpeg preset, CRF, encode speed — semua dari GUI |
+| 💻 **Auto Setup** | `Launcher.bat` install Python, Playwright, dan **FFmpeg otomatis** |
 
 ---
 
-## 🖥️ Screenshot
+## 💻 Requirements
 
-> *Dark theme GUI dengan drag & drop, batch mode, dan real-time log*
+| Komponen | Versi | Keterangan |
+|---|---|---|
+| Windows | 10 / 11 | Launcher.bat otomatis setup semua |
+| Python | 3.12 (portable) | Di-download otomatis oleh Launcher |
+| Chromium | via Playwright | Di-install otomatis |
+| FFmpeg | release-essentials | Di-download otomatis dari gyan.dev |
 
----
-
-## 📦 Requirements
-
-- Python **3.10+**
-- Windows 10/11 atau Linux
-- Firefox Relay API Key → [relay.firefox.com](https://relay.firefox.com)
-- Gmail + Google API credentials (`credentials.json`)
+> ✅ **Tidak perlu install apapun secara manual** — cukup jalankan `Launcher.bat`
 
 ---
 
-## 🚀 Instalasi
+## 🚀 Quick Start (Windows)
 
-### 1. Clone repo
-```bash
-git clone https://github.com/fannyf123/a1d-video-upscaler.git
-cd a1d-video-upscaler
+```bat
+:: 1. Clone repo
+git clone https://github.com/fannyf123/a1d-video-upscaler-mod.git
+cd a1d-video-upscaler-mod
+
+:: 2. Jalankan launcher (install semua otomatis)
+Launcher.bat
 ```
 
-### 2. Install dependencies
+Launcher akan otomatis:
+1. **[1/4]** Download & setup Python 3.12 portable
+2. **[2/4]** Install semua Python dependencies (`requirements.txt`)
+3. **[3/4]** Install Playwright Chromium (~130 MB, sekali saja)
+4. **[4/4]** Download & install FFmpeg portable (~75 MB, sekali saja)
+5. 🚀 Jalankan `main.py`
+
+### Linux / macOS
+
+```bash
+bash Launcher.sh
+```
+
+> ⚠️ FFmpeg di Linux/macOS perlu install manual: `sudo apt install ffmpeg` atau `brew install ffmpeg`
+
+### Manual (tanpa Launcher)
+
 ```bash
 pip install -r requirements.txt
-```
-
-### 3. Install Playwright browser
-```bash
 playwright install chromium
-```
-> ⚡ Tidak perlu download Chrome secara manual — Playwright download Chromium sendiri (~170 MB)
-
-### 4. Setup Google OAuth
-Letakkan file `credentials.json` (Gmail API) di root folder.
-Pertama kali run akan minta login Google via browser.
-
-### 5. Jalankan
-```bash
-# Windows
-Launcher.bat
-
-# Linux / macOS
-bash Launcher.sh
-
-# Atau langsung
 python main.py
 ```
 
@@ -82,9 +83,10 @@ python main.py
 
 ## ⚙️ Konfigurasi (`config.json`)
 
+File ini di-generate otomatis saat pertama kali dijalankan. Semua setting bisa diubah langsung dari tab **Settings** di GUI.
+
 ```json
 {
-  "relay_api_key": "YOUR_FIREFOX_RELAY_API_KEY",
   "output_quality": "4k",
   "output_dir": "",
   "headless": true,
@@ -92,41 +94,75 @@ python main.py
   "batch_stagger_delay": 15,
   "initial_download_wait": 120,
   "processing_hang_timeout": 1800,
-  "download_timeout": 600
+  "download_timeout": 600,
+  "a1d_url": "https://a1d.ai",
+  "theme": "dark",
+  "ffmpeg": {
+    "enabled": true,
+    "preset_name": "adobe_stock_4k_h264",
+    "mute_audio": true,
+    "replace_original": true,
+    "crf": 18,
+    "encode_preset": "slow",
+    "timeout": 7200,
+    "video_codec": "libx264",
+    "pix_fmt": "yuv420p",
+    "scale": "3840:2160",
+    "audio_codec": "aac",
+    "audio_bitrate": "320k",
+    "extra_args": "-movflags +faststart"
+  }
 }
 ```
 
-| Key | Tipe | Default | Keterangan |
-|---|---|---|---|
-| `relay_api_key` | string | — | Firefox Relay API key |
-| `output_quality` | string | `4k` | `1080p` / `2k` / `4k` |
-| `output_dir` | string | `""` | Folder output (kosong = folder video/OUTPUT) |
-| `headless` | bool | `true` | Jalankan browser tanpa tampilan |
-| `max_workers` | int | `3` | Jumlah video paralel (1–5) |
-| `batch_stagger_delay` | int | `15` | Jeda detik antar worker start |
-| `initial_download_wait` | int | `120` | Tunggu (detik) sebelum cek tombol Download |
-| `processing_hang_timeout` | int | `1800` | Timeout total proses render (detik) |
-| `download_timeout` | int | `600` | Timeout download file (detik) |
+### Parameter Utama
+
+| Key | Default | Keterangan |
+|---|---|---|
+| `output_quality` | `4k` | Target upscale: `1080p` / `2k` / `4k` |
+| `output_dir` | `""` | Folder output (kosong = folder video/OUTPUT) |
+| `headless` | `true` | Browser berjalan di background (tanpa tampilan) |
+| `max_workers` | `3` | Jumlah video paralel (1–5) |
+| `batch_stagger_delay` | `15` | Jeda detik antar worker mulai |
+| `initial_download_wait` | `120` | Tunggu sebelum cek tombol Download (detik) |
+| `processing_hang_timeout` | `1800` | Timeout total render per video (detik) |
+| `download_timeout` | `600` | Timeout download file (detik) |
+| `a1d_url` | `https://a1d.ai` | URL service (ubah jika domain berganti) |
+
+### FFmpeg Settings
+
+| Key | Default | Keterangan |
+|---|---|---|
+| `ffmpeg.enabled` | `true` | Aktifkan FFmpeg setelah A1D selesai |
+| `ffmpeg.preset_name` | `adobe_stock_4k_h264` | Profil encode output |
+| `ffmpeg.mute_audio` | `true` | Hapus audio (`-an`) — wajib untuk Adobe Stock |
+| `ffmpeg.replace_original` | `true` | Ganti file A1D dengan hasil FFmpeg |
+| `ffmpeg.crf` | `18` | Kualitas: `0`=lossless, `18`=sangat bagus, `28`=medium |
+| `ffmpeg.encode_preset` | `slow` | Kecepatan encode: `ultrafast` → `veryslow` |
 
 ---
 
 ## 📁 Struktur Proyek
 
 ```
-a1d-video-upscaler/
+a1d-video-upscaler-mod/
 ├── App/
-│   ├── background_process.py   # Core: Playwright automation (A1DProcessor)
-│   ├── batch_processor.py      # Batch: paralel multi-video (BatchProcessor)
-│   ├── firefox_relay.py        # Firefox Relay API wrapper
-│   ├── gmail_otp.py            # Gmail OTP reader via Google API
-│   └── temp_cleanup.py         # Cleanup temp/crdownload files
-├── main.py                     # GUI utama (PySide6 dark/light theme)
-├── config.json                 # Konfigurasi
-├── requirements.txt
-├── Launcher.bat                # Launcher Windows
-├── Launcher.sh                 # Launcher Linux/macOS
-├── build.spec                  # PyInstaller build config
-└── update.bat                  # Auto-update script
+│   ├── background_process.py    # Core: Playwright automation (A1DProcessor)
+│   ├── batch_processor.py       # Batch: antrian multi-video (BatchProcessor)
+│   ├── ffmpeg_postprocessor.py  # FFmpeg post-processing engine + preset defs
+│   ├── mailticking_pw.py        # Mailticking temp email (tanpa API key)
+│   ├── temp_cleanup.py          # Bersihkan file temp / .crdownload
+│   ├── progress_handler.py      # Progress tracking per worker
+│   ├── logger.py                # Logging utilities
+│   └── __init__.py
+├── main.py                      # GUI utama (PySide6 dark/light, v2.7.0)
+├── config.default.json          # Template konfigurasi default
+├── requirements.txt             # Python dependencies
+├── Launcher.bat                 # Auto-setup + launcher (Windows)
+├── Launcher.sh                  # Launcher (Linux/macOS)
+├── build.spec                   # PyInstaller config
+├── build_local.bat              # Build .exe lokal
+└── update.bat                   # Auto-update dari GitHub
 ```
 
 ---
@@ -134,59 +170,80 @@ a1d-video-upscaler/
 ## 🔄 Cara Kerja
 
 ```
-1. User drag & drop video ke GUI
-2. BatchProcessor start N worker paralel (stagger 15s)
+1. User drag & drop video ke GUI  →  klik RUN UPSCALER
+2. BatchProcessor start N worker paralel (stagger delay antar start)
    └─ Tiap worker (A1DProcessor):
-       ├─ Firefox Relay  → buat email mask sementara
-       ├─ Playwright     → buka a1d.ai/auth/sign-in
-       ├─ Input email    → request OTP
-       ├─ Gmail API      → baca OTP otomatis
-       ├─ Submit OTP     → jika gagal, auto-retry (max 3x):
-       │     ├─ Cek tombol Resend OTP di halaman
-       │     │   ✅ Ada  → klik Resend, bersihkan input, isi OTP baru
-       │     │   ❌ Tidak ada → kembali ke sign-in, input email ulang
-       │     └─ Ulangi hingga berhasil atau percobaan habis
-       ├─ Login berhasil → buka video editor
-       ├─ Upload file video
-       ├─ Pilih kualitas (4K / 2K / 1080p)
-       ├─ Klik Generate  → tunggu initial wait
-       ├─ Polling tombol Download → expect_download()
-       └─ File tersimpan ke output folder
-3. Summary: ✅ N berhasil / ❌ N gagal
+       ├─ Mailticking   →  buat email temporary sekali pakai (otomatis)
+       ├─ Playwright    →  buka a1d.ai, sign-in dengan email temp
+       ├─ OTP           →  baca kode dari Mailticking inbox, isi otomatis
+       ├─ Upload        →  upload file video ke a1d.ai
+       ├─ Generate      →  pilih kualitas (4K/2K/1080p), klik Generate
+       ├─ Download      →  polling tombol Download, simpan ke output folder
+       └─ FFmpeg        →  [jika enabled] encode ulang:
+             ├─ Preset: H.264/H.265, resolusi, bitrate
+             ├─ Mute audio → Adobe Stock compliant
+             └─ Replace original atau simpan terpisah
+3. Summary: ✅ N berhasil  ❌ N gagal  (total N video)
 ```
 
 ---
 
-## 🛠️ Browser Engine
+## 🎬 FFmpeg Post-Processing
 
-App ini menggunakan **Playwright Chromium** (bukan Selenium):
+Setelah A1D selesai, file di-encode ulang oleh FFmpeg untuk memastikan kompatibilitas maksimal:
 
-| | Selenium (lama) | Playwright (sekarang) |
-|---|---|---|
-| Install | Harus download ChromeDriver manual | `playwright install chromium` otomatis |
-| Download file | Monitor folder manual | `expect_download()` native |
-| Tunggu elemen | `WebDriverWait` manual | Auto-wait built-in |
-| Click intercepted | Butuh `_safe_click()` workaround | Handled otomatis |
+| Preset | Resolusi | Codec | Keterangan |
+|---|---|---|---|
+| `adobe_stock_4k_h264` | 3840×2160 | H.264 High 5.2 | Default — Adobe Stock 4K |
+| `adobe_stock_4k_h265` | 3840×2160 | H.265 Main | Lebih kecil, kualitas sama |
+| `adobe_stock_2k_h264` | 2560×1440 | H.264 | Adobe Stock 2K |
+| `adobe_stock_1080p_h264` | 1920×1080 | H.264 | Adobe Stock 1080p |
+
+Semua preset:
+- `-pix_fmt yuv420p` — kompatibel maksimal
+- `-movflags +faststart` — web streaming ready
+- Mute audio opsional (`-an`) — wajib untuk stock video
 
 ---
 
-## 🔐 OTP Auto-Retry
+## 🔧 Troubleshooting
 
-Jika OTP pertama gagal/kadaluarsa, sistem secara otomatis mencoba ulang hingga **3 kali**:
+| Error | Solusi |
+|---|---|
+| `[ERROR] Gagal download Python` | Cek koneksi internet, coba lagi |
+| `[ERROR] Gagal install Chromium` | Jalankan ulang Launcher.bat |
+| FFmpeg tidak terinstall | Cek log di step [4/4], atau install manual dari [ffmpeg.org](https://ffmpeg.org/download.html) dan tambahkan ke PATH |
+| OTP timeout | Naikkan `initial_download_wait` di Settings |
+| Worker hang | Naikkan `processing_hang_timeout`, atau klik **Force Reset** di Settings |
+| Video gagal di-upscale | Cek tab System Logs untuk detail error per worker |
 
-1. **Cek tombol Resend** di halaman OTP → klik jika ada
-2. Jika tidak ada tombol Resend → **kembali ke halaman sign-in**, isi email ulang
-3. Bersihkan kolom input OTP dari kode lama
-4. Tunggu OTP baru dari Gmail, isi, dan submit kembali
+---
+
+## 📊 Changelog
+
+### v2.7.0
+- ➕ FFmpeg Post-Processing UI di Settings (preset, CRF, encode speed, mute, replace)
+- ➕ Launcher.bat auto-install FFmpeg portable (gyan.dev + BtbN fallback)
+- 🔄 Migrasi email: Firefox Relay → **Mailticking** (tanpa API key)
+- 🔊 Hapus field Firefox Relay Key dari Settings UI
+- 📁 Cleanup file legacy (a1d_upscaler.py, config_manager.py, file_processor.py, firefox_relay.py)
+- 🐛 Fix Launcher.bat: ganti `!()` → `-not ()` untuk kompatibilitas `EnableDelayedExpansion`
+
+### v2.6.x
+- Batch processor dengan queue cerdas (N worker, stagger delay)
+- Dark/Light theme GitHub-style
+- Real-time log dengan badge INFO/SUCCESS/WARNING/ERROR
 
 ---
 
 ## ⚠️ Disclaimer
 
-Tool ini dibuat untuk keperluan **pribadi / edukasi**. Penggunaan berlebihan dapat melanggar Terms of Service a1d.ai. Gunakan dengan bijak.
+Tool ini dibuat untuk keperluan **pribadi / edukasi**. Penggunaan berlebihan dapat melanggar Terms of Service [a1d.ai](https://a1d.ai). Gunakan dengan bijak dan bertanggung jawab.
 
 ---
 
 <div align="center">
-Made with ❤️ by <a href="https://github.com/fannyf123">fannyf</a>
+
+Made with ❤️ by <a href="https://github.com/fannyf123">fannyf123</a> &nbsp;·&nbsp; Inspired by <a href="https://github.com/SotongHD">SotongHD</a>
+
 </div>
