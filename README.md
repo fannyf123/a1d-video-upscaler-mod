@@ -244,6 +244,6 @@ Tool ini dibuat untuk keperluan **pribadi / edukasi**. Penggunaan berlebihan dap
 
 <div align="center">
 
-Made with ❤️ by <a href="https://github.com/fannyf123">fannyf123</a> &nbsp;·&nbsp; Inspired by <a href="https://github.com/SotongHD">SotongHD</a>
+Made with ❤️ by <a href="https://github.com/fannyf123">fannyf123</a> &nbsp;·&nbsp;
 
 </div>
