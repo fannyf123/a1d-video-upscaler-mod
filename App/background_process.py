@@ -254,6 +254,61 @@ class A1DProcessor(QThread):
 
         self.prog(88, "Menunggu proses selesai...")
         out_path = self._wait_and_download(out_dir)
+
+        # --- FFMPEG POST-PROCESSING FOR 4K MICROSTOCK ---
+        self.prog(95, "Memproses video dengan FFMPEG (4K Microstock, Mute Audio)...")
+        self.log("🎬 Memulai post-processing FFMPEG untuk 4K Microstock (H.264, Mute Audio)...", "INFO")
+        try:
+            import subprocess
+            base = os.path.splitext(os.path.basename(self.video_path))[0]
+            microstock_path = os.path.join(out_dir, f"{base}_microstock_4k.mp4")
+            
+            # FFMPEG arguments for 4K (3840x2160) scaling + padding if aspect ratio differs,
+            # libx264 high quality, yuv420p for compatibility, and muted audio (-an)
+            cmd = [
+                "ffmpeg", "-y", "-i", out_path,
+                "-vf", "scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2",
+                "-c:v", "libx264",
+                "-preset", "slow",
+                "-crf", "17",
+                "-pix_fmt", "yuv420p",
+                "-an",
+                microstock_path
+            ]
+            
+            startupinfo = None
+            if os.name == 'nt':
+                try:
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                except AttributeError:
+                    pass
+            
+            process = subprocess.run(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                startupinfo=startupinfo
+            )
+            
+            if process.returncode != 0:
+                self.log(f"⚠️ FFMPEG Error: {process.stderr}", "WARNING")
+            else:
+                self.log(f"✅ FFMPEG Selesai: {os.path.basename(microstock_path)}", "SUCCESS")
+                
+                # Hapus file upscaled asli untuk menghemat ruang (opsional tapi disarankan)
+                try:
+                    os.remove(out_path)
+                    self.log(f"🧹 Menghapus file original upscaled: {os.path.basename(out_path)}", "INFO")
+                except Exception as e:
+                    self.log(f"⚠️ Gagal menghapus file original: {e}", "WARNING")
+                
+                out_path = microstock_path
+        except Exception as e:
+            self.log(f"⚠️ Gagal menjalankan FFMPEG: {e}", "WARNING")
+        # ------------------------------------------------
+
         self.log(f"💾 Tersimpan: {out_path}", "SUCCESS")
         return out_path
 
