@@ -30,7 +30,7 @@ echo  -----------------------------------------------------------
 
 if exist "%PY_EXE%" (
     echo         OK  -  Python portable sudah ada.
-    goto :pip_check
+    goto :pip_setup
 )
 
 echo         Download  -  Python 3.12 embed ^(amd64^) ~25 MB...
@@ -45,21 +45,67 @@ powershell -NoProfile -Command "Expand-Archive -Path '%ROOT%py.zip' -Destination
 del "%ROOT%py.zip" 2>nul
 echo         OK  -  Python 3.12 berhasil diinstall.
 
-:pip_check
-:: Aktifkan import site agar pip bisa berjalan
-findstr /C:"import site" "%PY_DIR%\python312._pth" >nul 2>&1 || echo import site>>"%PY_DIR%\python312._pth"
+:: ===========================================================
+:: Patch ._pth + Install pip
+:: ===========================================================
+:pip_setup
 
-if not exist "%PY_DIR%\Scripts\pip.exe" (
-    echo         Menginstall pip...
-    powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', '%ROOT%get-pip.py')"
-    "%PY_EXE%" "%ROOT%get-pip.py" --quiet
-    del "%ROOT%get-pip.py" 2>nul
-    echo         OK  -  pip terinstall.
+:: Patch semua python3*._pth (wildcard agar jalan di versi manapun)
+:: WAJIB dilakukan SEBELUM pip diinstall agar site-packages aktif
+echo         Patch ._pth untuk aktifkan site-packages...
+for %%f in ("%PY_DIR%\python3*._pth") do (
+    findstr /C:"import site" "%%f" >nul 2>&1
+    if errorlevel 1 (
+        echo import site>>"%%f"
+        echo         Patched: %%~nxf
+    )
 )
+
+:: Cek apakah pip sudah tersedia
+"%PY_EXE%" -m pip --version >nul 2>&1
+if not errorlevel 1 (
+    echo         OK  -  pip sudah tersedia.
+    goto :install_deps
+)
+
+:: Coba ensurepip dulu (bundled dalam Python, tidak perlu download)
+echo         Setup pip via ensurepip ^(bundled^)...
+"%PY_EXE%" -m ensurepip --upgrade
+
+:: Verifikasi setelah ensurepip
+"%PY_EXE%" -m pip --version >nul 2>&1
+if not errorlevel 1 (
+    echo         OK  -  pip berhasil diinstall via ensurepip.
+    goto :upgrade_pip
+)
+
+:: Fallback: download get-pip.py jika ensurepip gagal
+echo         ensurepip gagal  -  fallback ke get-pip.py...
+powershell -NoProfile -Command "(New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', '%ROOT%get-pip.py')"
+if errorlevel 1 (
+    echo  [ERROR] Gagal download get-pip.py. Periksa koneksi.
+    pause & exit /b 1
+)
+"%PY_EXE%" "%ROOT%get-pip.py"
+del "%ROOT%get-pip.py" 2>nul
+
+:: Verifikasi akhir
+"%PY_EXE%" -m pip --version >nul 2>&1
+if errorlevel 1 (
+    echo  [ERROR] pip tidak bisa diinstall setelah dua percobaan.
+    echo         Coba hapus folder 'python\' lalu jalankan ulang Launcher.bat
+    pause & exit /b 1
+)
+echo         OK  -  pip berhasil diinstall via get-pip.py.
+
+:upgrade_pip
+echo         Upgrade pip ke versi terbaru...
+"%PY_EXE%" -m pip install --upgrade pip --quiet --disable-pip-version-check
 
 :: ===========================================================
 :: STEP 2  —  Python Dependencies
 :: ===========================================================
+:install_deps
 echo.
 echo  [2/4] Python Dependencies
 echo  -----------------------------------------------------------
@@ -68,6 +114,7 @@ echo         Menginstall/memperbarui dari requirements.txt...
 "%PY_EXE%" -m pip install -r "%ROOT%requirements.txt" --quiet --disable-pip-version-check
 if errorlevel 1 (
     echo  [ERROR] Gagal install Python dependencies!
+    echo         Coba jalankan ulang Launcher.bat, atau periksa koneksi internet.
     pause & exit /b 1
 )
 echo         OK  -  PySide6, Playwright, qtawesome, dll sudah ter-update.
@@ -144,7 +191,6 @@ echo         Mengekstrak arsip...
 powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:FF_ZIP, $env:FF_TMP)"
 
 :: --- Salin bin\ ke ffmpeg\bin\ ----------------------------------------
-:: FIX: gunakan '-not' bukan '!' agar tidak bentrok dengan EnableDelayedExpansion
 powershell -NoProfile -Command "$sub = Get-ChildItem $env:FF_TMP -Directory | Select-Object -First 1; if (-not $sub) { Write-Host '[ERROR] Struktur zip tidak dikenali'; exit 1 }; $src = Join-Path $sub.FullName 'bin'; $dst = Join-Path $env:FF_DIR 'bin'; if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Force -Path $dst | Out-Null }; Copy-Item (Join-Path $src '*') -Destination $dst -Recurse -Force; Write-Host '         Salin selesai.'"
 
 :: --- Bersihkan temp ------------------------------------------------
