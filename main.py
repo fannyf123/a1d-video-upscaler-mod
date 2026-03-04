@@ -20,7 +20,7 @@ from PySide6.QtGui import QFont, QTextCursor, QColor
 import qtawesome as qta
 
 from App.background_process import A1DProcessor
-from App.batch_processor import BatchProcessor, MAX_PARALLEL_LIMIT, DEFAULT_WORKERS
+from App.batch_processor import BatchProcessor, MAX_PARALLEL_LIMIT, DEFAULT_WORKERS, DEFAULT_MAX_RETRIES
 from App.ffmpeg_postprocessor import PRESET_LABELS, PRESET_KEYS
 
 CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
@@ -369,6 +369,7 @@ class MainWindow(QMainWindow):
             "download_timeout":        600,
             "a1d_url":                 "https://a1d.ai",
             "theme":                   "dark",
+            "max_retries":             DEFAULT_MAX_RETRIES,
             "ffmpeg": {
                 "enabled":          True,
                 "preset_name":      "adobe_stock_4k_h264",
@@ -578,6 +579,7 @@ class MainWindow(QMainWindow):
         g3, f3 = section("Performance & Reliability", "fa5s.microchip", "WarnCard")
         self.s_work    = QSpinBox(); self.s_work.setRange(1, MAX_PARALLEL_LIMIT); self.s_work.setMinimumHeight(40)
         self.s_stagger = QSpinBox(); self.s_stagger.setRange(0, 120); self.s_stagger.setSuffix(" sec"); self.s_stagger.setMinimumHeight(40)
+        self.s_retries = QSpinBox(); self.s_retries.setRange(0, 10); self.s_retries.setMinimumHeight(40)
         self.s_dl_to   = QSpinBox(); self.s_dl_to.setRange(60, 3600); self.s_dl_to.setSuffix(" sec"); self.s_dl_to.setMinimumHeight(40)
         self.s_hang    = QSpinBox(); self.s_hang.setRange(300, 7200); self.s_hang.setSuffix(" sec"); self.s_hang.setMinimumHeight(40)
         self.chk_h     = QCheckBox("Headless Browser  (run Chromium silently in background)")
@@ -587,6 +589,7 @@ class MainWindow(QMainWindow):
         self.btn_rst.clicked.connect(self._force_reset)
         f3.addRow(row_label("Max Parallel Workers",  f"Max: {MAX_PARALLEL_LIMIT} simultaneous"), self.s_work)
         f3.addRow(row_label("Stagger Delay",         "Detik jeda antar worker start"), self.s_stagger)
+        f3.addRow(row_label("Max Retries",           "Retry otomatis jika video gagal upscale"), self.s_retries)
         f3.addRow(row_label("Download Timeout",      "Max tunggu download mulai"), self.s_dl_to)
         f3.addRow(row_label("Process Hang Timeout",  "Kill worker jika total waktu melebihi ini"), self.s_hang)
         f3.addRow("", self.chk_h); f3.addRow("", self.btn_rst)
@@ -719,6 +722,7 @@ class MainWindow(QMainWindow):
         # Performance
         self.s_work.setValue(c.get("max_workers",             DEFAULT_WORKERS))
         self.s_stagger.setValue(c.get("batch_stagger_delay",  15))
+        self.s_retries.setValue(c.get("max_retries",          DEFAULT_MAX_RETRIES))
         self.s_dl_to.setValue(c.get("download_timeout",       600))
         self.s_hang.setValue(c.get("processing_hang_timeout", 1800))
         self.chk_h.setChecked(c.get("headless", True))
@@ -751,6 +755,7 @@ class MainWindow(QMainWindow):
             "initial_download_wait":   self.s_wait.value(),
             "max_workers":             self.s_work.value(),
             "batch_stagger_delay":     self.s_stagger.value(),
+            "max_retries":             self.s_retries.value(),
             "download_timeout":        self.s_dl_to.value(),
             "processing_hang_timeout": self.s_hang.value(),
             "headless":                self.chk_h.isChecked(),
@@ -853,13 +858,12 @@ class MainWindow(QMainWindow):
             f"|  Replace: {ff.get('replace_original', True)}"
         )
         self._log("-" * 52)
-        if len(self._paths) == 1:
-            self.processor = A1DProcessor(_PROJECT_ROOT, self._paths[0], cfg)
-        else:
-            self.processor = BatchProcessor(_PROJECT_ROOT, self._paths, cfg)
+        # Always use BatchProcessor for consistent retry logic
+        self.processor = BatchProcessor(_PROJECT_ROOT, self._paths, cfg)
         self.processor.log_signal.connect(self._log)
         self.processor.progress_signal.connect(self._on_progress)
         self.processor.finished_signal.connect(lambda ok, m, _: self._on_finished(ok, m))
+        self.processor.video_status_signal.connect(self._update_video_status)
         self.processor.start()
 
     def _set_running(self, r):
@@ -885,6 +889,22 @@ class MainWindow(QMainWindow):
     def _cancel(self):
         if self.processor: self.processor.cancel()
         self._log("Force stop requested — terminating all workers.", "ERROR")
+
+    def _update_video_status(self, job_idx: int, status: str):
+        """Update the icon of a video item in the file list based on its processing status."""
+        if job_idx < 0 or job_idx >= self.file_list.count():
+            return
+        item = self.file_list.item(job_idx)
+        if item is None:
+            return
+        status_icons = {
+            "pending":    ("fa5s.clock",        C['text_muted']),
+            "processing": ("fa5s.sync-alt",     C['primary']),
+            "success":    ("fa5s.check-circle", C['success']),
+            "failed":     ("fa5s.times-circle", C['error']),
+        }
+        icon_name, color = status_icons.get(status, ("fa5s.clock", C['text_muted']))
+        item.setIcon(qta.icon(icon_name, color=color))
 
 
 if __name__ == "__main__":

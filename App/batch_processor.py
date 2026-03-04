@@ -10,6 +10,7 @@ from App.background_process import A1DProcessor
 MAX_PARALLEL_LIMIT = 5
 DEFAULT_WORKERS    = 3
 DEFAULT_STAGGER    = 15
+DEFAULT_MAX_RETRIES = 3
 
 
 class BatchProcessor(QThread):
@@ -23,10 +24,11 @@ class BatchProcessor(QThread):
     melanjutkan video ke-4.
     """
 
-    log_signal      = Signal(str, str)
-    progress_signal = Signal(int, str)
-    worker_done     = Signal(int, bool, str)
-    finished_signal = Signal(bool, str, list)
+    log_signal          = Signal(str, str)
+    progress_signal     = Signal(int, str)
+    worker_done         = Signal(int, bool, str)
+    finished_signal     = Signal(bool, str, list)
+    video_status_signal = Signal(int, str)   # (job_idx, "pending"|"processing"|"success"|"failed")
 
     def __init__(self, base_dir: str, video_paths: list, config: dict):
         super().__init__()
@@ -41,8 +43,13 @@ class BatchProcessor(QThread):
         try:    cfg_stagger = int(cfg_stagger)
         except: cfg_stagger = DEFAULT_STAGGER
 
+        cfg_retries = config.get("max_retries", DEFAULT_MAX_RETRIES)
+        try:    cfg_retries = int(cfg_retries)
+        except: cfg_retries = DEFAULT_MAX_RETRIES
+
         self.max_workers   = max(1, min(cfg_workers, MAX_PARALLEL_LIMIT))
         self.stagger_delay = max(0, cfg_stagger)
+        self.max_retries   = max(0, cfg_retries)
         self.base_dir      = base_dir
         self.video_paths   = list(video_paths)  # ALL videos — no longer sliced!
         self.config        = config
@@ -53,6 +60,7 @@ class BatchProcessor(QThread):
         self._results:   dict[int, tuple[bool, str]] = {}
         self._pct_map:   dict[int, int]              = {}
         self._slots:     dict[int, A1DProcessor]     = {}    # slot_id → active worker
+        self._retry_count: dict[int, int]            = {}    # job_idx → attempts so far
 
         # Job queue: list of (job_index, video_path) not yet started
         self._job_queue: list[tuple[int, str]] = [
@@ -120,10 +128,15 @@ class BatchProcessor(QThread):
         with QMutexLocker(self._mutex):
             self._slots[slot_id] = worker
 
+        # Emit status: this video is now processing
+        self.video_status_signal.emit(job_idx, "processing")
+
+        attempt = self._retry_count.get(job_idx, 0)
+        retry_info = f" (retry {attempt}/{self.max_retries})" if attempt > 0 else ""
         worker.start()
         self._log(
             f"▶️  Slot {slot_id+1} → Video [{job_idx+1}/{n}]: "
-            f"{os.path.basename(vpath)}",
+            f"{os.path.basename(vpath)}{retry_info}",
             "INFO",
         )
 
@@ -137,14 +150,40 @@ class BatchProcessor(QThread):
     def _on_worker_finished(self, slot_id: int, job_idx: int,
                             ok: bool, path_or_err: str):
         n = self._total
+        vname = os.path.basename(self.video_paths[job_idx])
 
+        # ── Retry logic: re-queue failed video if retries remain ──────────
+        if not ok and not self._cancelled:
+            with QMutexLocker(self._mutex):
+                attempt = self._retry_count.get(job_idx, 0) + 1
+                self._retry_count[job_idx] = attempt
+            if attempt <= self.max_retries:
+                self._log(
+                    f"🔄 [{job_idx+1}/{n}] {vname} GAGAL — retry {attempt}/{self.max_retries}...",
+                    "WARNING",
+                )
+                self._pct_map[job_idx] = 0
+                # Re-queue: put it back at the front of the queue
+                with QMutexLocker(self._mutex):
+                    self._job_queue.insert(0, (job_idx, self.video_paths[job_idx]))
+                # Spawn background thread to pick up the re-queued job
+                threading.Thread(
+                    target=self._start_next_in_slot,
+                    args=(slot_id,),
+                    daemon=True,
+                    name=f"slot-{slot_id}-retry",
+                ).start()
+                return
+
+        # ── Record final result ───────────────────────────────────────────
         with QMutexLocker(self._mutex):
             self._results[job_idx]  = (ok, path_or_err)
             self._pct_map[job_idx]  = 100
             done                    = len(self._results)
 
         icon  = "✅" if ok else "❌"
-        vname = os.path.basename(self.video_paths[job_idx])
+        status = "success" if ok else "failed"
+        self.video_status_signal.emit(job_idx, status)
         self.log_signal.emit(
             f"{icon} [{job_idx+1}/{n}] {vname} SELESAI — {path_or_err}",
             "SUCCESS" if ok else "ERROR",
@@ -160,7 +199,7 @@ class BatchProcessor(QThread):
             return
 
         # Spawn background thread: (optional stagger) → pop next job → start
-        # Running this in a daemon thread avoids blocking the worker’s own
+        # Running this in a daemon thread avoids blocking the worker's own
         # finally block (cleanup_mask / quit_browser).
         threading.Thread(
             target  = self._start_next_in_slot,
@@ -192,13 +231,15 @@ class BatchProcessor(QThread):
         self._log("🚀 Batch START", "INFO")
         self._log(f"├ Workers : {self.max_workers} paralel (max {MAX_PARALLEL_LIMIT})", "INFO")
         self._log(f"├ Video   : {n} file", "INFO")
+        self._log(f"├ Retries : {self.max_retries}x per video", "INFO")
         self._log(f"└ Stagger : {self.stagger_delay}s antar start", "INFO")
         self._log("-" * 56, "INFO")
         self._prog(0, f"Batch: 0/{n} selesai")
 
-        # Initialise progress map for ALL jobs
+        # Initialise progress map for ALL jobs + emit pending status
         for i in range(n):
             self._pct_map[i] = 0
+            self.video_status_signal.emit(i, "pending")
 
         # ─ Start the first wave (up to max_workers) ──────────────────────
         for slot_id in range(initial):

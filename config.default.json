@@ -10,6 +10,7 @@
   "download_timeout": 600,
   "a1d_url": "https://a1d.ai",
   "theme": "dark",
+  "max_retries": 3,
   "ffmpeg": {
     "_comment": "FFmpeg post-processing setelah A1D selesai upscale. Preset adobe_stock_4k_h264 memenuhi semua syarat Adobe Stock Contributor: H.264 High 5.2, 3840x2160, yuv420p, CRF 18, slow, -movflags +faststart, audio muted.",
     "enabled": true,
