@@ -913,6 +913,8 @@ class A1DProcessor(QThread):
         start             = time.time()
         last_pct          = 88
         last_disabled_log = 0
+        _dl_reload_count  = 0   # jumlah reload yang sudah dilakukan saat L2 stuck
+        _MAX_DL_RELOADS   = 3   # max reload otomatis sebelum fallback ke L3
 
         DL_LOCATORS = [
             "body > div.flex.min-h-\\[100vh\\].flex-col > div.flex.h-\\[calc\\(100vh-72px\\)\\].w-full.flex-nowrap.gap-4 > div.flex.w-full.flex-col.gap-2.overflow-y-auto > div > div > div.items-center.p-6.flex.justify-between.px-4.py-2 > div:nth-child(1)",
@@ -1012,6 +1014,34 @@ class A1DProcessor(QThread):
                         "SUCCESS",
                     )
                     return out_path
+
+                except PWTimeout:
+                    # ── AUTO-RELOAD SAAT L2 STUCK ──────────────────────────────
+                    dl_sec = int(self.config.get("download_timeout", 600))
+                    self.log(
+                        f"⚠️ [L2] Download stuck / tidak ada event setelah {dl_sec}s",
+                        "WARNING",
+                    )
+                    if _dl_reload_count < _MAX_DL_RELOADS:
+                        _dl_reload_count += 1
+                        self.log(
+                            f"🔄 Auto-reload halaman & coba ulang download "
+                            f"({_dl_reload_count}/{_MAX_DL_RELOADS})...",
+                            "WARNING",
+                        )
+                        try:
+                            self.page.reload(wait_until="domcontentloaded")
+                            time.sleep(5)
+                        except Exception as reload_err:
+                            self.log(f"⚠️ Reload error: {reload_err}", "WARNING")
+                        # Kembali ke outer while → cari tombol Download lagi
+                        continue
+                    else:
+                        self.log(
+                            f"⚠️ [L2] Max {_MAX_DL_RELOADS}x reload tercapai — lanjut ke L3",
+                            "WARNING",
+                        )
+
                 except Exception as e:
                     self.log(f"⚠️ L2 gagal: {e}", "WARNING")
 
